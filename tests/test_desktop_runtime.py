@@ -27,17 +27,20 @@ class DesktopRuntimePathTests(unittest.TestCase):
         original_cwd = Path.cwd()
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
-                with mock.patch.dict(
-                    os.environ,
-                    {"XIANYU_DATA_DIR": temp_dir, "XIANYU_DESKTOP": "1"},
-                    clear=False,
-                ):
-                    sys.modules.pop("app.runtime_paths", None)
-                    paths = importlib.import_module("app.runtime_paths")
-                    paths.prepare_desktop_working_directory()
-                    self.assertEqual(Path(temp_dir).resolve(), Path.cwd())
+                try:
+                    with mock.patch.dict(
+                        os.environ,
+                        {"XIANYU_DATA_DIR": temp_dir, "XIANYU_DESKTOP": "1"},
+                        clear=False,
+                    ):
+                        sys.modules.pop("app.runtime_paths", None)
+                        paths = importlib.import_module("app.runtime_paths")
+                        paths.prepare_desktop_working_directory()
+                        self.assertEqual(Path(temp_dir).resolve(), Path.cwd())
+                finally:
+                    # Windows cannot remove the process's current directory.
+                    os.chdir(original_cwd)
         finally:
-            os.chdir(original_cwd)
             sys.modules.pop("app.runtime_paths", None)
 
 
