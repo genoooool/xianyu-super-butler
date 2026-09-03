@@ -1,4 +1,5 @@
 import importlib
+import ast
 import os
 import sys
 import tempfile
@@ -87,19 +88,63 @@ class PackagedBackendSmokeTests(unittest.TestCase):
         response = mock.MagicMock()
         response.__enter__.return_value.status = 200
         with mock.patch.object(smoke_backend, "parse_args", return_value=mock.Mock(
-            target="test-target", playwright_dir="."
+            target="test-target", playwright_dir=".", backend="signed-app-backend"
         )), mock.patch.object(Path, "is_file", return_value=True), mock.patch.object(
             smoke_backend.subprocess, "Popen", return_value=process
         ) as popen, mock.patch.object(
             smoke_backend.urllib.request, "urlopen", return_value=response
-        ), mock.patch.object(smoke_backend, "stop_backend") as stop:
+        ), mock.patch.object(smoke_backend, "stop_backend") as stop, mock.patch.object(
+            smoke_backend, "verify_desktop_bootstrap"
+        ) as bootstrap:
             self.assertEqual(0, smoke_backend.main())
 
         output = popen.call_args.kwargs["stdout"]
+        self.assertEqual([str(Path("signed-app-backend").resolve())], popen.call_args.args[0])
         self.assertNotEqual(smoke_backend.subprocess.PIPE, output)
         self.assertTrue(output.closed)
         process.stdout.read.assert_not_called()
         stop.assert_called_once_with(process)
+        bootstrap.assert_called_once()
+
+
+class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Load only this pure handler; importing reply_server initializes
+        # legacy databases and account managers that are unrelated here.
+        import secrets
+        from fastapi import HTTPException, Query
+        from fastapi.responses import HTMLResponse
+
+        source = Path(__file__).resolve().parents[1] / "app" / "reply_server.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        handler = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
+                       and node.name == "desktop_bootstrap")
+        handler.decorator_list = []
+        namespace = {
+            "DESKTOP_ACCESS_TOKEN": "test-launch-secret",
+            "DESKTOP_ACCESS_COOKIE": "xianyu_desktop_access",
+            "secrets": secrets, "HTTPException": HTTPException,
+            "Query": Query, "HTMLResponse": HTMLResponse,
+        }
+        exec(compile(ast.Module(body=[handler], type_ignores=[]), str(source), "exec"), namespace)
+        self.handler = namespace["desktop_bootstrap"]
+        self.http_error = HTTPException
+
+    async def test_bootstrap_commits_a_document_and_keeps_strict_httponly_cookie(self):
+        response = await self.handler("test-launch-secret")
+        self.assertEqual(200, response.status_code)
+        self.assertNotIn("location", response.headers)
+        self.assertIn('window.location.replace("/")', response.body.decode())
+        self.assertNotIn(b"test-launch-secret", response.body)
+        self.assertIn("HttpOnly", response.headers["set-cookie"])
+        self.assertIn("SameSite=strict", response.headers["set-cookie"])
+        self.assertEqual("no-store", response.headers["cache-control"])
+        self.assertEqual("no-referrer", response.headers["referrer-policy"])
+
+    async def test_bootstrap_rejects_invalid_token(self):
+        with self.assertRaises(self.http_error) as raised:
+            await self.handler("wrong-token")
+        self.assertEqual(403, raised.exception.status_code)
 
 
 if __name__ == "__main__":

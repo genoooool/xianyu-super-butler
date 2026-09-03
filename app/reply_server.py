@@ -468,7 +468,17 @@ async def desktop_bootstrap(token: str = Query("")):
 
     if not DESKTOP_ACCESS_TOKEN or not secrets.compare_digest(token, DESKTOP_ACCESS_TOKEN):
         raise HTTPException(status_code=403, detail="桌面启动令牌无效")
-    response = RedirectResponse(url="/", status_code=303)
+    # Commit a loopback document before navigating again. WebKit does not
+    # send a SameSite=Strict cookie on the redirect chain originating at
+    # tauri://localhost, even though the bootstrap response set it correctly.
+    response = HTMLResponse(
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<title>正在打开闲鱼工作台</title></head><body>'
+        '<p>正在打开闲鱼工作台…</p>'
+        '<script>setTimeout(() => window.location.replace("/"), 0);</script>'
+        '</body></html>',
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
     response.set_cookie(
         DESKTOP_ACCESS_COOKIE,
         DESKTOP_ACCESS_TOKEN,

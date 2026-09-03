@@ -161,6 +161,16 @@ jobs:
           --target "${{ matrix.target }}"
           --bundles "${{ matrix.bundles }}"
 
+      - name: Smoke-test final signed macOS backend
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        shell: bash
+        run: >-
+          python desktop/scripts/smoke_backend.py
+          --target "${{ matrix.target }}"
+          --backend "desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/闲鱼工作台.app/Contents/MacOS/xianyu-backend"
+          --playwright-dir "desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/闲鱼工作台.app/Contents/Resources/playwright"
+
       - name: Write checksums
         shell: bash
         run: |

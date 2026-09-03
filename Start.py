@@ -745,7 +745,11 @@ def _start_api_server():
     # 在后台线程中创建独立事件循环并直接运行 server.serve()
     import uvicorn
     try:
-        config = uvicorn.Config("app.reply_server:app", host=host, port=port, log_level="info")
+        config = uvicorn.Config(
+            "app.reply_server:app", host=host, port=port, log_level="info",
+            # The application logs method/path without the bootstrap secret.
+            access_log=os.getenv("XIANYU_DESKTOP") != "1",
+        )
         server = uvicorn.Server(config)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

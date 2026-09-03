@@ -83,6 +83,8 @@ def main() -> int:
         "uvicorn.protocols.websockets.auto",
         "--hidden-import",
         "uvicorn.lifespan.on",
+        "--hidden-import",
+        "backports.tarfile",
     ]
     if os.name == "nt":
         # The Tauri shell owns the user-facing window; prevent an extra console.

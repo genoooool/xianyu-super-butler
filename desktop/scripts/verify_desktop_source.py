@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import plistlib
 import sys
 from pathlib import Path
 
@@ -26,6 +27,7 @@ def main() -> int:
         ROOT / "desktop" / "app-icon.svg",
         ROOT / "desktop" / "ui" / "index.html",
         TAURI / "Cargo.toml",
+        TAURI / "Entitlements.plist",
         TAURI / "src" / "main.rs",
         TAURI / "capabilities" / "default.json",
         TAURI / "binaries" / ".gitkeep",
@@ -48,6 +50,16 @@ def main() -> int:
     require(
         bundle.get("windows", {}).get("nsis", {}).get("installMode") == "currentUser",
         "Windows installer must use current-user mode",
+    )
+    require(
+        bundle.get("macOS", {}).get("entitlements") == "./Entitlements.plist",
+        "macOS signing must preserve the embedded Python library-loading entitlement",
+    )
+    with (TAURI / "Entitlements.plist").open("rb") as file:
+        entitlements = plistlib.load(file)
+    require(
+        entitlements == {"com.apple.security.cs.disable-library-validation": True},
+        "macOS entitlements must be limited to embedded Python library loading",
     )
 
     start_source = (ROOT / "Start.py").read_text(encoding="utf-8")
