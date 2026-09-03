@@ -17,6 +17,70 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 
+import psutil
+
+
+def verify_runtime_lifecycle(backend: Path, env: dict, work_dir: Path, abrupt: bool = True) -> None:
+    """Exercise frozen helpers and launcher exit without loading accounts."""
+    def is_alive(process):
+        try:
+            return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+
+    mode = 'abrupt' if abrupt else 'graceful'
+    log_path = work_dir / f'runtime-probe-{mode}.log'
+    report_path = work_dir / f'runtime-probe-ready-{mode}.json'
+    probe_env = dict(env, XIANYU_RUNTIME_PROBE_REPORT=str(report_path))
+    tracked = {}
+    with log_path.open('w', encoding='utf-8') as output:
+        process = subprocess.Popen([str(backend), '--desktop-runtime-probe'], cwd=work_dir,
+                                   env=probe_env, stdout=output, stderr=subprocess.STDOUT)
+        root = psutil.Process(process.pid)
+        try:
+            deadline = time.monotonic() + 40
+            ready_at = None
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError('Packaged runtime probe exited before shutdown check')
+                children = root.children(recursive=True)
+                for child in children:
+                    tracked[(child.pid, child.create_time())] = child
+                if len(children) > 24:
+                    raise RuntimeError('Packaged runtime recursively spawned too many children')
+                if report_path.is_file():
+                    ready_at = ready_at or time.monotonic()
+                    if time.monotonic() - ready_at >= 3:
+                        break
+                time.sleep(0.2)
+            else:
+                raise RuntimeError('Packaged worker/browser probe did not become ready')
+            # Both normal SIGTERM forwarding and an abruptly lost bootloader
+            # must clean up the backend, worker, resource tracker and browser.
+            if abrupt:
+                process.kill()
+            else:
+                process.terminate()
+            process.wait(timeout=12)
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and any(is_alive(p) for p in tracked.values()):
+                time.sleep(0.2)
+            if any(is_alive(p) for p in tracked.values()):
+                raise RuntimeError('Packaged backend left live descendants after launcher exit')
+            print(f'Packaged spawn worker, blank browser and {mode} cleanup checks passed', flush=True)
+        except Exception:
+            print(log_path.read_text(encoding='utf-8', errors='replace')[-6000:], file=sys.stderr)
+            raise
+        finally:
+            if process.poll() is None:
+                for child in root.children(recursive=True):
+                    tracked[(child.pid, child.create_time())] = child
+                process.kill()
+            for child in tracked.values():
+                if is_alive(child):
+                    child.kill()
+            process.wait(timeout=5)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -97,6 +161,8 @@ def main() -> int:
                 "PYTHONUNBUFFERED": "1",
             }
         )
+        verify_runtime_lifecycle(backend, env, Path(temp_dir))
+        verify_runtime_lifecycle(backend, env, Path(temp_dir), abrupt=False)
         log_path = Path(temp_dir) / "backend-output.log"
         healthy = False
         # A file cannot fill up a pipe or block on EOF held by a child process.

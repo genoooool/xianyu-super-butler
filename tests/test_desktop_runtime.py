@@ -96,7 +96,9 @@ class PackagedBackendSmokeTests(unittest.TestCase):
         ), mock.patch.object(smoke_backend, "stop_backend") as stop, mock.patch.object(
             smoke_backend, "verify_desktop_bootstrap"
         ) as bootstrap:
-            self.assertEqual(0, smoke_backend.main())
+            with mock.patch.object(smoke_backend, 'verify_runtime_lifecycle') as lifecycle:
+                self.assertEqual(0, smoke_backend.main())
+                self.assertEqual(2, lifecycle.call_count)
 
         output = popen.call_args.kwargs["stdout"]
         self.assertEqual([str(Path("signed-app-backend").resolve())], popen.call_args.args[0])

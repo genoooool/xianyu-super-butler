@@ -5,6 +5,20 @@
 3. 主协程保持运行
 """
 
+# Frozen multiprocessing helpers must dispatch before configuration, database
+# initialization or any third-party imports. Otherwise the resource tracker
+# re-enters this entire application and recursively starts more backends.
+if __name__ == '__main__':
+    import multiprocessing
+    multiprocessing.freeze_support()
+
+    from app.desktop_lifecycle import install_desktop_lifecycle, run_runtime_probe
+    install_desktop_lifecycle()
+
+    import sys
+    if sys.argv[1:] == ['--desktop-runtime-probe']:
+        raise SystemExit(run_runtime_probe())
+
 import os
 import sys
 import shutil

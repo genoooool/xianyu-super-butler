@@ -1,7 +1,6 @@
 import React, { Suspense, lazy, useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import GlobalFeedback from './components/GlobalFeedback';
-import AnnouncementBanner from './components/AnnouncementBanner';
 import ThemeToggle from './components/ThemeToggle';
 import { login, verifyToken, getPublicSettings, register, sendVerificationCode } from './services/api';
 import { ShieldCheck, ArrowRight, Loader2, User, Lock, Menu, Mail, KeyRound, CheckCircle2 } from 'lucide-react';
@@ -492,7 +491,6 @@ const App: React.FC = () => {
           </div>
           <ThemeToggle compact className="ml-auto" />
         </header>
-        {activeTab !== 'messages' && <AnnouncementBanner />}
         <div className={
           activeTab === 'messages'
             ? 'h-[calc(100vh-3.5rem)] lg:h-screen overflow-hidden'

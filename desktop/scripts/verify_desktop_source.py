@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import ast
 import plistlib
 import sys
 from pathlib import Path
@@ -63,6 +64,15 @@ def main() -> int:
     )
 
     start_source = (ROOT / "Start.py").read_text(encoding="utf-8")
+    startup = ast.parse(start_source).body[1]
+    require(
+        isinstance(startup, ast.If)
+        and isinstance(startup.body[1], ast.Expr)
+        and isinstance(startup.body[1].value, ast.Call)
+        and isinstance(startup.body[1].value.func, ast.Attribute)
+        and startup.body[1].value.func.attr == "freeze_support",
+        "Frozen multiprocessing helpers must dispatch before application imports",
+    )
     require("prepare_desktop_working_directory()" in start_source, "Start.py does not prepare the desktop data directory")
     require("default_host = '127.0.0.1'" in start_source, "Desktop backend must default to loopback")
 

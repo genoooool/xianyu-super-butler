@@ -124,10 +124,7 @@ fn start_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
     let desktop_token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let base_url = format!("http://127.0.0.1:{port}");
 
-    append_launcher_log(
-        &data_dir,
-        &format!("starting backend on 127.0.0.1:{port}"),
-    );
+    append_launcher_log(&data_dir, &format!("starting backend on 127.0.0.1:{port}"));
     set_splash_status(&window, "正在启动本地服务…");
 
     let sidecar = app
@@ -244,6 +241,20 @@ fn stop_backend(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<BackendProcess>() {
         if let Ok(mut guard) = state.0.lock() {
             if let Some(child) = guard.take() {
+                #[cfg(unix)]
+                {
+                    // CommandChild.kill() sends SIGKILL, preventing the onefile
+                    // bootloader from forwarding shutdown and cleaning its temp
+                    // directory. The backend owns bounded descendant cleanup.
+                    if std::process::Command::new("/bin/kill")
+                        .args(["-TERM", &child.pid().to_string()])
+                        .status()
+                        .map(|status| status.success())
+                        .unwrap_or(false)
+                    {
+                        return;
+                    }
+                }
                 let _ = child.kill();
             }
         }
