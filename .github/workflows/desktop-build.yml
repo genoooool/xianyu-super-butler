@@ -15,6 +15,7 @@ on:
       - "frontend/**"
       - "static/**"
       - "desktop/**"
+      - "tests/**"
       - "requirements.txt"
       - "global_config.yml"
       - ".github/workflows/desktop-build.yml"
@@ -135,6 +136,7 @@ jobs:
         run: python desktop/scripts/build_backend.py --target "${{ matrix.target }}"
 
       - name: Smoke-test packaged backend
+        timeout-minutes: 5
         shell: bash
         run: >-
           python desktop/scripts/smoke_backend.py

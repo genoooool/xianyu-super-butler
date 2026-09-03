@@ -28,6 +28,27 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def stop_backend(process: subprocess.Popen) -> None:
+    if os.name == "nt":
+        # A PyInstaller one-file executable owns a second backend process.
+        # Terminating only the bootloader leaves that child (and its handles)
+        # alive on Windows.
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+            check=False,
+        )
+    else:
+        process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
+
+
 def main() -> int:
     args = parse_args()
     root = Path(__file__).resolve().parents[2]
@@ -51,44 +72,42 @@ def main() -> int:
                 "PYTHONUNBUFFERED": "1",
             }
         )
-        kwargs: dict[str, object] = {
-            "cwd": temp_dir,
-            "env": env,
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.STDOUT,
-            "text": True,
-            "encoding": "utf-8",
-            "errors": "replace",
-        }
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        process = subprocess.Popen([str(backend)], **kwargs)
-        output: list[str] = []
-        try:
-            deadline = time.time() + 150
-            while time.time() < deadline:
-                if process.poll() is not None:
-                    break
-                try:
-                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as response:
-                        if response.status == 200:
-                            print("Packaged backend health check passed")
-                            return 0
-                except Exception:
-                    pass
-                time.sleep(1)
-        finally:
-            process.terminate()
+        log_path = Path(temp_dir) / "backend-output.log"
+        healthy = False
+        # A file cannot fill up a pipe or block on EOF held by a child process.
+        with log_path.open("w", encoding="utf-8") as output:
+            kwargs: dict[str, object] = {
+                "cwd": temp_dir,
+                "env": env,
+                "stdout": output,
+                "stderr": subprocess.STDOUT,
+            }
+            if os.name == "nt":
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            process = subprocess.Popen([str(backend)], **kwargs)
             try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=10)
-            if process.stdout:
-                output.extend(process.stdout.read().splitlines())
+                deadline = time.monotonic() + 150
+                while time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        break
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as response:
+                            if response.status == 200:
+                                healthy = True
+                                print("Packaged backend health check passed", flush=True)
+                                break
+                    except Exception:
+                        pass
+                    time.sleep(1)
+            finally:
+                stop_backend(process)
 
+        if healthy:
+            return 0
         print("Packaged backend did not become healthy", file=sys.stderr)
-        print("\n".join(output[-200:]), file=sys.stderr)
+        for path in [log_path, *sorted((Path(temp_dir) / "logs").glob("*.log"))]:
+            print(f"--- {path.name} ---", file=sys.stderr)
+            print("\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-200:]), file=sys.stderr)
         return 1
 
 
