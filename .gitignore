@@ -810,3 +810,14 @@ frontend/coverage/
 # Wrangler 本地缓存（Cloudflare Worker 部署产生）
 .wrangler/
 deploy/.wrangler/
+
+# Tauri desktop build output
+desktop/node_modules/
+desktop/dist-backend/
+desktop/build-backend/
+desktop/src-tauri/target/
+desktop/src-tauri/icons/
+desktop/src-tauri/binaries/*
+!desktop/src-tauri/binaries/.gitkeep
+desktop/src-tauri/resources/playwright/*
+!desktop/src-tauri/resources/playwright/.gitkeep

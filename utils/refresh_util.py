@@ -59,10 +59,25 @@ class DrissionHandler:
 
         self.co = ChromiumOptions()
 
+        # Desktop builds ship Playwright Chromium. Prefer the exact bundled
+        # executable so DrissionPage does not require a separately installed
+        # Chrome/Edge browser.
+        bundled_browser = None
+        try:
+            from utils.xianyu_slider_stealth import find_chromium_executable
+            bundled_browser = find_chromium_executable()
+        except Exception as exc:
+            logger.debug(f"查找内置 Chromium 失败: {exc}")
+        if bundled_browser:
+            self.co.set_browser_path(bundled_browser)
+            logger.debug(f"使用内置浏览器路径: {bundled_browser}")
+
         # 根据操作系统设置浏览器路径
         import platform
         system = platform.system().lower()
-        if system == "linux":
+        if bundled_browser:
+            pass
+        elif system == "linux":
             # Linux系统
             possible_paths = [
                 "/usr/bin/chromium-browser",

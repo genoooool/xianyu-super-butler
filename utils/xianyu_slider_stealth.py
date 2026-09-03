@@ -68,6 +68,8 @@ def find_chromium_executable() -> Optional[str]:
         'chrome-linux/chrome',
         'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
         'chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+        'chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium',
+        'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
         'chrome-win/chrome.exe',
     )
     for root in roots:
@@ -3893,6 +3895,10 @@ class XianyuSliderStealth:
             # 配置浏览器选项
             logger.info(f"【{self.pure_user_id}】配置浏览器选项（{browser_mode}模式）...")
             co = ChromiumOptions()
+            bundled_browser = find_chromium_executable()
+            if bundled_browser:
+                co.set_browser_path(bundled_browser)
+                logger.info(f"【{self.pure_user_id}】DrissionPage 使用内置 Chromium: {bundled_browser}")
             
             # 根据 show_browser 参数决定是否启用无头模式
             if not show_browser:

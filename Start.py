@@ -10,6 +10,25 @@ import sys
 import shutil
 from pathlib import Path
 
+from app.runtime_paths import prepare_desktop_working_directory
+
+
+def _ensure_output_streams() -> None:
+    """Provide harmless sinks when a Windows GUI sidecar has no console."""
+
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+
+_ensure_output_streams()
+
+# Desktop installers launch the backend from a read-only application bundle.
+# Switch into the per-user application-data directory before any legacy
+# relative path (data/, logs/, browser_data/) is evaluated.
+prepare_desktop_working_directory()
+
 # 设置标准输出编码为UTF-8（Windows兼容）
 def _setup_console_encoding():
     """设置控制台编码为UTF-8，避免Windows GBK编码问题"""
@@ -346,6 +365,12 @@ def _check_and_install_playwright():
                 print(f"{_OK} Playwright Chromium未安装，将使用系统浏览器: {browser_path}")
                 return True
     
+    # Desktop bundles are self-contained. Missing Chromium is a packaging error,
+    # not a reason to launch a several-hundred-megabyte runtime download.
+    if not playwright_installed and os.getenv('XIANYU_DESKTOP', '').lower() in ('1', 'true', 'yes'):
+        print(f"{_WARN} 桌面版未找到内置 Chromium，请重新安装应用")
+        return False
+
     # 如果没找到，尝试安装
     if not playwright_installed:
         print(f"{_WARN} 未找到Playwright浏览器，正在自动安装...")
@@ -529,6 +554,10 @@ def _build_frontend():
     # 容器镜像在构建阶段就已经把前端产物放进 static/，运行时既没有 npm 也没有
     # node_modules。这里再走一遍只会白等一次 npm 失败，低配设备上还要多花几十秒，
     # 所以直接跳过。
+    if os.getenv('XIANYU_DESKTOP', '').lower() in ('1', 'true', 'yes'):
+        print(f"{_INFO} 桌面应用已内置前端产物，跳过构建")
+        return True
+
     if os.getenv('DOCKER_ENV', '').lower() in ('1', 'true', 'yes'):
         print(f"{_INFO} 容器环境，前端已在镜像构建阶段生成，跳过构建")
         return True
@@ -688,7 +717,8 @@ def _start_api_server():
     api_conf = AUTO_REPLY.get('api', {})
 
     # 优先使用环境变量配置
-    host = os.getenv('API_HOST', '0.0.0.0')  # 默认绑定所有接口
+    default_host = '127.0.0.1' if os.getenv('XIANYU_DESKTOP', '').lower() in ('1', 'true', 'yes') else '0.0.0.0'
+    host = os.getenv('API_HOST', default_host)
     port = int(os.getenv('API_PORT', '8080'))  # 默认端口8080
 
     # 如果配置文件中有特定配置，则使用配置文件

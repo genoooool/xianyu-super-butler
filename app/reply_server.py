@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Body, Query
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from typing import List, Tuple, Optional, Dict, Any
@@ -16,7 +16,17 @@ import asyncio
 import sqlite3
 from collections import defaultdict, OrderedDict
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from app.runtime_paths import (
+    RESOURCE_ROOT,
+    STATIC_ROOT,
+    UPLOADS_ROOT,
+    UPLOAD_IMAGES_ROOT,
+    ensure_runtime_layout,
+    writable_keywords_path,
+)
+
+ensure_runtime_layout()
+PROJECT_ROOT = RESOURCE_ROOT
 
 from app import cookie_manager
 from app.db_manager import db_manager
@@ -46,7 +56,7 @@ except ImportError:
     CAPTCHA_ROUTER_AVAILABLE = False
 
 # 关键字文件路径
-KEYWORDS_FILE = PROJECT_ROOT / "回复关键字.txt"
+KEYWORDS_FILE = writable_keywords_path()
 
 # 简单的用户认证配置
 ADMIN_USERNAME = "admin"
@@ -56,6 +66,11 @@ TOKEN_EXPIRE_TIME = 24 * 60 * 60  # token过期时间：24小时
 
 # HTTP Bearer认证
 security = HTTPBearer(auto_error=False)
+
+# Tauri supplies a fresh secret on every launch. Source and Docker deployments
+# leave this empty and retain their existing behaviour.
+DESKTOP_ACCESS_TOKEN = os.getenv("XIANYU_DESKTOP_TOKEN", "").strip()
+DESKTOP_ACCESS_COOKIE = "xianyu_desktop_access"
 
 # 扫码登录检查锁 - 防止并发处理同一个session
 qr_check_locks = defaultdict(lambda: asyncio.Lock())
@@ -344,6 +359,17 @@ setup_file_logging()
 from loguru import logger
 logger.info("Web服务器启动，文件日志收集器已初始化")
 
+# Desktop builds use a random loopback access cookie in addition to the
+# application's normal Bearer login token. /health remains accessible so the
+# Tauri launcher can wait for readiness; bootstrap validates the one-time URL.
+@app.middleware("http")
+async def require_desktop_access_cookie(request, call_next):
+    if DESKTOP_ACCESS_TOKEN and request.url.path not in {"/health", "/desktop/bootstrap"}:
+        supplied = request.cookies.get(DESKTOP_ACCESS_COOKIE, "")
+        if not secrets.compare_digest(supplied, DESKTOP_ACCESS_TOKEN):
+            return JSONResponse(status_code=403, content={"detail": "桌面会话未初始化"})
+    return await call_next(request)
+
 # 添加请求日志中间件
 @app.middleware("http")
 async def log_requests(request, call_next):
@@ -358,25 +384,22 @@ async def log_requests(request, call_next):
 
     return response
 
-# 提供前端静态文件
+# 提供前端静态文件。应用资源是只读的，用户上传图片单独放入
+# XIANYU_DATA_DIR，并用更具体的 /static/uploads 路由优先挂载。
 import os
-static_dir = str(PROJECT_ROOT / 'static')
-if not os.path.exists(static_dir):
-    os.makedirs(static_dir, exist_ok=True)
+static_dir = str(STATIC_ROOT)
+if not os.path.isdir(static_dir):
+    raise RuntimeError(f"前端静态资源不存在: {static_dir}")
 
-# 挂载静态文件目录
+uploads_root = str(UPLOADS_ROOT)
+uploads_dir = str(UPLOAD_IMAGES_ROOT)
+os.makedirs(uploads_dir, exist_ok=True)
+app.mount('/static/uploads', StaticFiles(directory=uploads_root), name='uploads')
 app.mount('/static', StaticFiles(directory=static_dir), name='static')
 
-# 挂载 /assets 路径，指向 static/assets 目录
-# 这样访问 /assets/xxx.js 时会正确映射到 static_dir/assets/xxx.js
+# 构建产物使用 /assets/ 绝对路径，因此保留独立挂载。
 assets_dir = os.path.join(static_dir, 'assets')
 app.mount('/assets', StaticFiles(directory=assets_dir), name='assets')
-
-# 确保图片上传目录存在
-uploads_dir = os.path.join(static_dir, 'uploads', 'images')
-if not os.path.exists(uploads_dir):
-    os.makedirs(uploads_dir, exist_ok=True)
-    logger.info(f"创建图片上传目录: {uploads_dir}")
 
 # 健康检查端点
 @app.get('/health')
@@ -438,6 +461,23 @@ async def serve_frontend():
             return HTMLResponse(f.read())
     else:
         return HTMLResponse('<h3>Frontend not found. Please build the frontend first.</h3>')
+
+@app.get('/desktop/bootstrap', include_in_schema=False)
+async def desktop_bootstrap(token: str = Query("")):
+    """Exchange the Tauri launch secret for a local HttpOnly cookie."""
+
+    if not DESKTOP_ACCESS_TOKEN or not secrets.compare_digest(token, DESKTOP_ACCESS_TOKEN):
+        raise HTTPException(status_code=403, detail="桌面启动令牌无效")
+    response = RedirectResponse(url="/", status_code=303)
+    response.set_cookie(
+        DESKTOP_ACCESS_COOKIE,
+        DESKTOP_ACCESS_TOKEN,
+        httponly=True,
+        secure=False,
+        samesite="strict",
+        max_age=24 * 60 * 60,
+    )
+    return response
 
 @app.get('/', response_class=HTMLResponse)
 async def root():
@@ -2598,7 +2638,7 @@ async def get_account_face_verification_screenshot(
                 }
         
         # 获取该账号的验证截图
-        screenshots_dir = os.path.join(static_dir, 'uploads', 'images')
+        screenshots_dir = uploads_dir
         pattern = os.path.join(screenshots_dir, f'face_verify_{account_id}_*.jpg')
         screenshot_files = glob.glob(pattern)
         
@@ -2659,7 +2699,7 @@ async def delete_account_face_verification_screenshot(
             }
         
         # 删除该账号的所有验证截图
-        screenshots_dir = os.path.join(static_dir, 'uploads', 'images')
+        screenshots_dir = uploads_dir
         pattern = os.path.join(screenshots_dir, f'face_verify_{account_id}_*.jpg')
         screenshot_files = glob.glob(pattern)
         
