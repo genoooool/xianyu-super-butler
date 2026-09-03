@@ -59,6 +59,9 @@ class AIReplyEngineTests(unittest.TestCase):
                 return_value='  "有货，可以直接拍。"  ',
             ) as call_openai,
             patch("app.ai_reply_engine.db_manager.get_ai_reply_settings", return_value=settings),
+            patch("app.ai_reply_engine.KnowledgeService.for_reply", return_value=[{
+                "id": 17, "source": "商品专属", "topic": "使用方法", "content": "请先使用兑换页面。"
+            }]) as knowledge,
         ):
             reply = self.engine.generate_reply(
                 message="有货吗",
@@ -72,7 +75,10 @@ class AIReplyEngineTests(unittest.TestCase):
 
         self.assertEqual(reply, "有货，可以直接拍。")
         self.assertEqual(save_conversation.call_count, 2)
+        knowledge.assert_called_once_with("account-1", "item-1", "有货吗")
         messages = call_openai.call_args.args[2]
+        self.assertIn("请先使用兑换页面", messages[0]["content"])
+        self.assertIn("不得编造库存", messages[0]["content"])
         self.assertEqual(
             [entry["content"] for entry in messages if entry["role"] == "user"],
             ["有货吗"],

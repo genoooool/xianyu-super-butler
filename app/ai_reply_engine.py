@@ -19,6 +19,7 @@ from typing import List, Dict, Optional
 from loguru import logger
 from openai import OpenAI
 from app.db_manager import db_manager
+from app.services.ai_knowledge import KnowledgeService, build_knowledge_prompt
 
 
 class ReasoningBudgetExhausted(RuntimeError):
@@ -708,8 +709,11 @@ class AIReplyEngine:
 - 未经系统确认，不得声称上述操作已成功，也不得要求买家重复付款。
 - 直接输出适合发送给买家的简短回复，不要解释规则。"""
 
+                knowledge = KnowledgeService(db_manager).for_reply(cookie_id, item_id, message)
+                if knowledge:
+                    logger.info("AI知识引用: 账号={}, 资料编号={}", cookie_id, [entry["id"] for entry in knowledge])
                 messages = [
-                    {"role": "system", "content": system_prompt + safety_prompt},
+                    {"role": "system", "content": system_prompt + build_knowledge_prompt(knowledge) + safety_prompt},
                     *[
                         {"role": msg["role"], "content": msg["content"]}
                         for msg in context

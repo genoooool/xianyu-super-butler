@@ -62,6 +62,18 @@ def main():
                 page.get_by_role('button', name='登录', exact=True).click()
                 page.get_by_role('heading', name='运营概览', exact=True).wait_for(timeout=20000)
                 page.get_by_text('有效成交额 (CNY)', exact=True).wait_for(timeout=20000)
+                # The signed backend must also contain the newly added knowledge
+                # schema/router. This fresh profile has no seller accounts.
+                auth = {'Authorization': 'Bearer ' + page.evaluate("localStorage.getItem('auth_token')")}
+                assert context.request.get(base + '/ai-knowledge').status == 401
+                assert context.request.get(base + '/ai-knowledge', headers=auth).json()['entries'] == []
+                fact = dict(scope='shared', topic='使用方法', content='隔离验收资料')
+                saved = context.request.post(base + '/ai-knowledge', headers=auth, data=fact)
+                assert saved.status == 200, saved.status
+                assert context.request.get(base + '/ai-knowledge', headers=auth).json()['entries'][0]['content'] == fact['content']
+                assert context.request.post(base + '/ai-knowledge/preview', headers=auth,
+                                            data=dict(cookie_id='nonexistent', message='使用方法')).status == 404
+                assert context.request.get(base + '/ai-knowledge/nonexistent', headers=auth).status == 404
                 page.wait_for_function("fetch('/desktop/notifications/status', {headers:{Authorization:'Bearer '+localStorage.getItem('auth_token')}}).then(r=>r.json()).then(s=>s.active)")
                 for chunk in ['Settings-', 'AIReply-', 'ItemList-', 'MessageManagement-', 'AccountList-']:
                     assert not any('/assets/' in url and chunk in url for url in requested), chunk
@@ -98,7 +110,7 @@ def main():
                 assert context.request.get(base + '/desktop/notifications/poll', headers=native).json()['count'] == 0
                 assert not errors, errors
                 browser.close()
-                print('Passed: initial-page-only chunks, global registration, generic test queue, native guard, disable persistence, navigation, logout, no JS errors', flush=True)
+                print('Passed: packaged knowledge schema/router/auth/save, initial-page-only chunks, global registration, generic test queue, native guard, disable persistence, navigation, logout, no JS errors', flush=True)
         finally:
             children = owner.children(recursive=True) if process.poll() is None else []
             process.terminate()

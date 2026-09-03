@@ -20,6 +20,7 @@ import {
 } from '../services/api';
 import { notify } from '../services/feedback';
 import { EmptyState, PageHeader, PageLoading, SectionHeader } from './ui';
+import AIKnowledge from './AIKnowledge';
 
 // 自建中转，兼容 OpenAI 接口，每天可领免费额度，省去用户自己找服务商配密钥。
 const FREE_TOKEN_BASE_URL = 'https://ai.corleom.com/v1';
@@ -51,6 +52,7 @@ const AIReply: React.FC = () => {
   const [showApiKey, setShowApiKey] = useState(false);
   const [testMessage, setTestMessage] = useState('你好，这个商品现在还能买吗？');
   const [testReply, setTestReply] = useState('');
+  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
 
   const selectedAccount = useMemo(
     () => accounts.find(account => account.id === selectedAccountId),
@@ -197,6 +199,12 @@ const AIReply: React.FC = () => {
               />
             </label>
           </section>
+
+          <button type="button" className="ios-btn-secondary flex items-center gap-2 self-start px-4 py-2 text-sm"
+            aria-expanded={knowledgeOpen} onClick={() => setKnowledgeOpen(open => !open)}>
+            <MessageSquareText size={16} />{knowledgeOpen ? '收起知识库' : '打开商品与店铺知识库'}
+          </button>
+          {knowledgeOpen && <AIKnowledge key={selectedAccountId} accountId={selectedAccountId} />}
 
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(340px,0.65fr)]">
             <div className="space-y-6">
@@ -395,7 +403,7 @@ const AIReply: React.FC = () => {
               <section className="section-panel">
                 <SectionHeader
                   title="回复测试"
-                  description="只生成文本，不会发送到闲鱼会话。"
+                  description="只生成文本，不发送消息。这里使用测试商品，仅包含店铺与共用知识；商品专属资料可在知识库中预览。"
                   icon={Play}
                 />
                 <div className="p-5">

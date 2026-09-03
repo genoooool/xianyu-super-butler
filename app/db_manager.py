@@ -738,6 +738,9 @@ class DBManager:
             # 执行数据库迁移
             self._migrate_database(cursor)
 
+            from app.services.ai_knowledge import initialize_schema as initialize_knowledge_schema
+            initialize_knowledge_schema(cursor)
+
             self.conn.commit()
             logger.info("数据库初始化完成")
         except Exception as e:
@@ -3344,6 +3347,14 @@ class DBManager:
                             'rows': [list(row) for row in rows]
                         }
 
+                # Shared knowledge has no cookie_id; filter by its workbench owner.
+                cursor.execute("SELECT * FROM ai_knowledge_entries" +
+                               (" WHERE owner_id = ?" if user_id is not None else ""),
+                               (user_id,) if user_id is not None else ())
+                backup_data['data']['ai_knowledge_entries'] = {
+                    'columns': [description[0] for description in cursor.description],
+                    'rows': [list(row) for row in cursor.fetchall()]
+                }
                 logger.info(f"导出备份成功，用户ID: {user_id}")
                 return backup_data
 
@@ -3430,6 +3441,12 @@ class DBManager:
                                 cursor.execute(f"INSERT INTO {table_name} ({','.join(columns)}) VALUES ({placeholders})", row)
                     else:
                         cursor.executemany(f"INSERT INTO {table_name} ({','.join(columns)}) VALUES ({placeholders})", rows)
+
+                # Restore after accounts/items, rebind owner and validate each target.
+                # Merge by scoped topic; old backups never erase newer knowledge.
+                if 'ai_knowledge_entries' in data:
+                    from app.services.ai_knowledge import KnowledgeService
+                    KnowledgeService(self).restore_backup(data['ai_knowledge_entries'], user_id)
 
                 # 提交事务
                 self.conn.commit()

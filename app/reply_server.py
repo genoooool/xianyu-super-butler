@@ -33,6 +33,7 @@ from app.product_automation import ProductAutomationService
 from app.file_log_collector import setup_file_logging, get_file_log_collector
 from app.desktop_notifications import desktop_notifications
 from app.routers.desktop_notifications import create_desktop_notifications_router
+from app.routers.ai_knowledge import create_ai_knowledge_router
 from app.routers.delivery_block import create_delivery_block_router
 from utils.qr_login import qr_login_manager
 from utils.xianyu_utils import trans_cookies
@@ -351,6 +352,7 @@ else:
 
 app.include_router(create_delivery_block_router(get_current_user, db_manager))
 app.include_router(create_desktop_notifications_router(desktop_notifications, DESKTOP_ACCESS_TOKEN, verify_token))
+app.include_router(create_ai_knowledge_router(get_current_user, db_manager))
 logger.info("已注册发货拦截规则路由")
 
 # 初始化文件日志收集器
@@ -8677,7 +8679,7 @@ async def import_orders(
 
 # 定义后端 API 的一级路径。未匹配的 API 路径必须返回 JSON 404，不能回退到 SPA。
 API_ROOTS = {
-    'admin', 'ai-reply-settings', 'ai-reply-test', 'analytics', 'api', 'backup',
+    'admin', 'ai-knowledge', 'ai-reply-settings', 'ai-reply-test', 'analytics', 'api', 'backup',
     'cards', 'change-admin-password', 'change-password', 'cookie', 'cookies',
     'blacklist', 'debug', 'default-replies', 'delivery-block-rules', 'delivery-rules', 'face-verification',
     'generate-captcha', 'geetest', 'health', 'item-reply', 'itemReplays', 'items',
