@@ -196,7 +196,8 @@ fn start_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
         .get_webview_window("main")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "找不到主窗口"))?;
     // Packaging acceptance gets a fresh empty profile, never real seller data.
-    let data_dir = if std::env::args().any(|arg| arg == "--desktop-smoke") {
+    let smoke = std::env::args().any(|arg| arg == "--desktop-smoke");
+    let data_dir = if smoke {
         std::env::temp_dir().join(format!("xianyu-desktop-smoke-{}", Uuid::new_v4()))
     } else {
         app.path().app_local_data_dir()?
@@ -218,11 +219,20 @@ fn start_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
     append_launcher_log(&data_dir, &format!("starting backend on 127.0.0.1:{port}"));
     set_splash_status(&window, "正在启动本地服务…");
 
-    let sidecar = app
-        .shell()
-        .sidecar("xianyu-backend")?
+    // macOS ships the complete runtime as read-only bundle resources, avoiding
+    // onefile extraction on every launch. Keep the legacy/Windows fallback.
+    let backend_path = app
+        .path()
+        .resolve("backend/xianyu-backend", BaseDirectory::Resource)?;
+    let command = if cfg!(target_os = "macos") && backend_path.is_file() {
+        app.shell().command(backend_path)
+    } else {
+        app.shell().sidecar("xianyu-backend")?
+    };
+    let sidecar = command
         .current_dir(&data_dir)
         .env("XIANYU_DESKTOP", "1")
+        .env("XIANYU_DESKTOP_SMOKE", if smoke { "1" } else { "0" })
         .env("XIANYU_DATA_DIR", &data_dir)
         .env("XIANYU_DESKTOP_TOKEN", &desktop_token)
         .env("PLAYWRIGHT_BROWSERS_PATH", &playwright_dir)

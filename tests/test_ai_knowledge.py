@@ -100,7 +100,7 @@ class KnowledgeTests(unittest.TestCase):
         self.assertEqual(build_knowledge_prompt([]), "")
 
     def test_validation_and_idempotent_schema(self):
-        for changes in [dict(topic=" "), dict(content="x" * 2001), dict(scope="shared", cookie_id="a"),
+        for changes in [dict(topic=" "), dict(content="x" * 60001), dict(scope="shared", cookie_id="a"),
                         dict(scope="item", cookie_id="a", item_id=""), dict(keywords="x" * 301)]:
             data = dict(scope="shared", topic="资料", content="内容")
             data.update(changes)

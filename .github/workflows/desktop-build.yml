@@ -168,7 +168,7 @@ jobs:
         run: >-
           python desktop/scripts/smoke_backend.py
           --target "${{ matrix.target }}"
-          --backend "desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/闲鱼工作台.app/Contents/MacOS/xianyu-backend"
+          --backend "desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/闲鱼工作台.app/Contents/Resources/backend/xianyu-backend"
           --playwright-dir "desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/闲鱼工作台.app/Contents/Resources/playwright"
 
       - name: Write checksums

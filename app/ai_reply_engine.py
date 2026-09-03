@@ -19,7 +19,7 @@ from typing import List, Dict, Optional
 from loguru import logger
 from openai import OpenAI
 from app.db_manager import db_manager
-from app.services.ai_knowledge import KnowledgeService, build_knowledge_prompt
+from app.services.ai_knowledge import KnowledgeService
 
 
 class ReasoningBudgetExhausted(RuntimeError):
@@ -712,16 +712,15 @@ class AIReplyEngine:
                 knowledge = KnowledgeService(db_manager).for_reply(cookie_id, item_id, message)
                 if knowledge:
                     logger.info("AI知识引用: 账号={}, 资料编号={}", cookie_id, [entry["id"] for entry in knowledge])
-                messages = [
-                    {"role": "system", "content": system_prompt + build_knowledge_prompt(knowledge) + safety_prompt},
-                    *[
+                from app.services.ai_context_budget import build_bounded_messages
+                messages = build_bounded_messages(
+                    system_prompt, safety_prompt, knowledge, [
                         {"role": msg["role"], "content": msg["content"]}
                         for msg in context
                         if msg.get("role") in {"user", "assistant"}
                         and not self.is_system_or_order_event(msg.get("content"))
-                    ],
-                    {"role": "user", "content": message},
-                ]
+                    ], message,
+                )
 
                 reply = self._generate_with_retry(settings, messages, cookie_id)
 

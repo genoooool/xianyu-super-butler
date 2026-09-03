@@ -16,6 +16,23 @@ class AIReplyEngineTests(unittest.TestCase):
         self.assertIn("不要承诺库存", prompt)
         self.assertIn("资深电商卖家", prompt)
 
+    def test_oversized_required_context_never_calls_model(self):
+        settings = dict(ai_enabled=True, custom_prompts='超长规则' * 10000, context_enabled=False)
+        with (
+            patch.object(self.engine, 'is_ai_enabled', return_value=True),
+            patch.object(self.engine, 'detect_intent', return_value='default'),
+            patch.object(self.engine, 'save_conversation'),
+            patch.object(self.engine, '_get_recent_user_messages', return_value=[]),
+            patch.object(self.engine, 'get_bargain_count', return_value=0),
+            patch.object(self.engine, '_generate_with_retry') as model,
+            patch('app.ai_reply_engine.db_manager.get_ai_reply_settings', return_value=settings),
+            patch('app.ai_reply_engine.KnowledgeService.for_reply', return_value=[]),
+        ):
+            result = self.engine.generate_reply('怎么使用', {'title': '测试', 'price': 100},
+                                                'chat', 'account', 'buyer', 'item', True)
+        self.assertIsNone(result)
+        model.assert_not_called()
+
     def test_reply_is_normalized_and_limited(self):
         reply = self.engine._normalize_reply('  "你好，   现货可拍。"  ')
         long_reply = self.engine._normalize_reply("答" * 500)

@@ -31,6 +31,7 @@ def main() -> int:
         TAURI / "Entitlements.plist",
         TAURI / "src" / "main.rs",
         TAURI / "capabilities" / "default.json",
+        TAURI / "tauri.macos.conf.json",
         TAURI / "binaries" / ".gitkeep",
         TAURI / "resources" / "playwright",
     ]
@@ -48,6 +49,10 @@ def main() -> int:
         resources.get("resources/playwright/") == "playwright/",
         "tauri.conf.json must bundle Playwright Chromium as a resource",
     )
+    mac_config = json.loads((TAURI / 'tauri.macos.conf.json').read_text(encoding='utf-8'))
+    require(mac_config['bundle']['externalBin'] == [] and
+            mac_config['bundle']['resources'].get('resources/backend/') == 'backend/',
+            'macOS must ship the complete one-directory backend without a redundant onefile sidecar')
     require(
         bundle.get("windows", {}).get("nsis", {}).get("installMode") == "currentUser",
         "Windows installer must use current-user mode",

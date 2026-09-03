@@ -1,10 +1,11 @@
-import React, { Suspense, lazy, useState, useEffect } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import GlobalFeedback from './components/GlobalFeedback';
 import ThemeToggle from './components/ThemeToggle';
 import { login, logout, verifyToken, getPublicSettings, register, sendVerificationCode } from './services/api';
 import { useDesktopNotifications } from './services/desktopNotifications';
 import { notify } from './services/feedback';
+import { readSavedLogin, saveLogin, forgetLogin } from './services/savedLogin';
 import { ShieldCheck, ArrowRight, Loader2, User, Lock, Menu, Mail, KeyRound, CheckCircle2 } from 'lucide-react';
 
 const Dashboard = lazy(() => import('./components/Dashboard'));
@@ -54,6 +55,10 @@ const App: React.FC = () => {
   const [password, setPassword] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [rememberLogin, setRememberLogin] = useState(false);
+  const [rememberAvailable, setRememberAvailable] = useState(false);
+  const [rememberBusy, setRememberBusy] = useState(false);
+  const loginEdited = useRef(false);
   // 注册成功后回到登录页时的提示
   const [loginNotice, setLoginNotice] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -70,6 +75,25 @@ const App: React.FC = () => {
   const [regNotice, setRegNotice] = useState('');
   const [codeSending, setCodeSending] = useState(false);
   const [codeCountdown, setCodeCountdown] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    if (!isLoggedIn && !checkingAuth) readSavedLogin().then(saved => {
+      if (!active) return;
+      setRememberAvailable(saved.available);
+      setRememberLogin(saved.saved);
+      if (saved.saved && !loginEdited.current) {
+        setUsername(saved.username || ''); setPassword(saved.password || '');
+      }
+    }).catch(error => {
+      if (!active) return;
+      if (error?.response?.status === 503) {
+        setRememberAvailable(true);
+        setLoginError('钥匙串读取未完成，可手动登录；勾选后成功登录可重新保存。');
+      }
+    });
+    return () => { active = false; };
+  }, [isLoggedIn, checkingAuth]);
 
   useEffect(() => {
     getPublicSettings()
@@ -189,6 +213,11 @@ const App: React.FC = () => {
           const res = await login({ username, password });
           if (res.success && res.token) {
               localStorage.setItem('auth_token', res.token);
+              if (rememberAvailable && rememberLogin) {
+                try { await saveLogin(res.username || username, password); }
+                catch { notify('已登录，但钥匙串保存结果未确认。请检查系统授权，下次登录时核对是否已记住。', 'error'); }
+              }
+              setPassword(''); loginEdited.current = false;
               setIsAdmin(Boolean(res.is_admin));
               setIsLoggedIn(true);
           } else {
@@ -280,7 +309,7 @@ const App: React.FC = () => {
                                 type="text"
                                 placeholder="请输入账号"
                                 value={username}
-                                onChange={e => setUsername(e.target.value)}
+                                onChange={e => { loginEdited.current = true; setUsername(e.target.value); }}
                                 autoComplete="username"
                                 required
                                 className="ios-input h-11 w-full rounded-md py-2.5 pl-10 pr-4 text-sm"
@@ -295,7 +324,7 @@ const App: React.FC = () => {
                                 type="password"
                                 placeholder="请输入密码"
                                 value={password}
-                                onChange={e => setPassword(e.target.value)}
+                                onChange={e => { loginEdited.current = true; setPassword(e.target.value); }}
                                 autoComplete="current-password"
                                 required
                                 className="ios-input h-11 w-full rounded-md py-2.5 pl-10 pr-4 text-sm"
@@ -303,6 +332,21 @@ const App: React.FC = () => {
                           </div>
                       </label>
                   </div>
+
+                  {rememberAvailable && <div className="space-y-1">
+                    <label className="flex items-center gap-2 text-sm text-gray-600">
+                      <input type="checkbox" checked={rememberLogin} disabled={rememberBusy || loginLoading}
+                        onChange={async event => {
+                          const checked = event.target.checked;
+                          if (checked) { setRememberLogin(true); return; }
+                          setRememberBusy(true);
+                          try { await forgetLogin(); setRememberLogin(false); setLoginError(''); }
+                          catch { setLoginError('尚未确认清除保存记录，请允许系统钥匙串访问后重试。'); }
+                          finally { setRememberBusy(false); }
+                        }} />记住账号和密码
+                    </label>
+                    <p className="text-xs text-gray-400">仅保存在本机系统钥匙串；取消勾选会清除已保存记录。</p>
+                  </div>}
 
                   {loginNotice && (
                       <div role="status" className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 p-3 text-sm font-semibold text-green-700">
@@ -318,7 +362,7 @@ const App: React.FC = () => {
 
                   <button
                     type="submit"
-                    disabled={loginLoading}
+                    disabled={loginLoading || rememberBusy}
                     className="ios-btn-primary flex h-11 w-full items-center justify-center gap-2 rounded-md text-sm disabled:opacity-70"
                   >
                     {loginLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <>登录 <ArrowRight className="h-4 w-4" /></>}

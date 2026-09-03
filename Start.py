@@ -18,6 +18,23 @@ if __name__ == '__main__':
     import sys
     if sys.argv[1:] == ['--desktop-runtime-probe']:
         raise SystemExit(run_runtime_probe())
+    if sys.argv[1:] == ['--desktop-keychain-probe']:
+        # Offline packaging acceptance uses a unique disposable test item,
+        # never the production login service or any seller database.
+        import uuid
+        from app.services.desktop_credentials import MacKeychain
+        keychain = MacKeychain('com.genoooool.xianyuworkbench.test.' + uuid.uuid4().hex)
+        try:
+            assert keychain.read() is None
+            keychain.save('offline-test', 'not-a-real-password')
+            assert keychain.read() == {'username': 'offline-test', 'password': 'not-a-real-password'}
+            keychain.save('offline-test', 'updated-test-password')
+            assert keychain.read()['password'] == 'updated-test-password'
+        finally:
+            keychain.forget()
+        assert keychain.read() is None
+        print('Packaged Keychain create/read/update/forget passed; no production credentials accessed')
+        raise SystemExit(0)
 
 import os
 import sys

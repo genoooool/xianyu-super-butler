@@ -34,7 +34,16 @@ def verify_runtime_lifecycle(backend: Path, env: dict, work_dir: Path, abrupt: b
     probe_env = dict(env, XIANYU_RUNTIME_PROBE_REPORT=str(report_path))
     tracked = {}
     with log_path.open('w', encoding='utf-8') as output:
-        process = subprocess.Popen([str(backend), '--desktop-runtime-probe'], cwd=work_dir,
+        command = [str(backend), '--desktop-runtime-probe']
+        if (backend.parent / '_internal').is_dir():
+            # One-directory has no bootloader parent. Kill an actual launcher,
+            # as force-quitting Tauri would; don't SIGKILL the cleanup owner.
+            launcher = ('import subprocess,signal,sys; '
+                        'child=subprocess.Popen(sys.argv[1:]); '
+                        'signal.signal(signal.SIGTERM,lambda *_: child.terminate()); '
+                        'sys.exit(child.wait())')
+            command = [sys.executable, '-c', launcher, *command]
+        process = subprocess.Popen(command, cwd=work_dir,
                                    env=probe_env, stdout=output, stderr=subprocess.STDOUT)
         root = psutil.Process(process.pid)
         try:
@@ -143,6 +152,9 @@ def main() -> int:
         if args.backend
         else root / "desktop" / "src-tauri" / "binaries" / f"xianyu-backend-{args.target}{suffix}"
     )
+    directory_backend = root / 'desktop' / 'src-tauri' / 'resources' / 'backend' / 'xianyu-backend'
+    if not args.backend and sys.platform == 'darwin' and directory_backend.is_file():
+        backend = directory_backend
     if not backend.is_file():
         raise FileNotFoundError(backend)
 

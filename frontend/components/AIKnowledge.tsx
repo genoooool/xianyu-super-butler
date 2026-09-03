@@ -5,6 +5,7 @@ import { Item } from '../types';
 import { KnowledgeDraft, KnowledgeEntry, KnowledgeScope, listKnowledge, previewKnowledge, saveKnowledge } from '../services/knowledge';
 import { notify } from '../services/feedback';
 import { SectionHeader } from './ui';
+import KnowledgeImport from './KnowledgeImport';
 
 const names: Record<KnowledgeScope, string> = { shared: '共用资料', account: '当前店铺', item: '商品专属' };
 const emptyDraft = { topic: '', keywords: '', content: '', enabled: true };
@@ -89,6 +90,13 @@ const AIKnowledge: React.FC<{ accountId: string }> = ({ accountId }) => {
               </select>
             </label>}
           </div>
+          <KnowledgeImport key={`${accountId}:${scope}:${itemId}`}
+            target={{ scope, cookie_id: scope === 'shared' ? '' : accountId, item_id: scope === 'item' ? itemId : '' }}
+            label={`${names[scope]}${scope === 'item' ? ' · ' + (items.find(item => item.item_id === itemId)?.item_title || itemId) : ''}`}
+            disabled={busy || (scope === 'item' && !itemId)} onBusy={setBusy} onImported={entry => {
+              setEntries(current => [entry, ...current.filter(row => row.id !== entry.id)]); setMatches(null);
+              notify('文档已导入，可编辑或停用', 'success');
+            }} />
           <div className="space-y-2" aria-label="知识条目">
             {visible.length === 0 && <p className="text-sm text-gray-500">这个范围暂无资料。可在下方添加，或从较通用范围建立同主题规则。</p>}
             {visible.map(entry => <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-gray-200 p-3">
@@ -118,8 +126,8 @@ const AIKnowledge: React.FC<{ accountId: string }> = ({ accountId }) => {
                 placeholder="例如：售后, 能退吗, 退款, 用不了" onChange={event => setDraft({ ...draft, keywords: event.target.value })} />
             </label>
             <label className="block"><span className="field-label">确定可对买家说明的内容</span>
-              <textarea aria-label="知识内容" required maxLength={2000} disabled={busy} className="ios-input min-h-32 w-full rounded-md px-3 py-2" value={draft.content}
-                placeholder="填写真实规则，不要填卡密、密码或未确认的承诺。最多2000字。" onChange={event => setDraft({ ...draft, content: event.target.value })} />
+              <textarea aria-label="知识内容" required maxLength={60000} disabled={busy} className="ios-input min-h-32 w-full rounded-md px-3 py-2" value={draft.content}
+                placeholder="填写问答或真实规则，不要填卡密、密码或未确认的承诺。最多60000字，长文按段检索。" onChange={event => setDraft({ ...draft, content: event.target.value })} />
             </label>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={busy} checked={draft.enabled} onChange={event => setDraft({ ...draft, enabled: event.target.checked })} />启用这条资料</label>
             <button type="submit" disabled={busy || !draft.topic.trim() || !draft.content.trim() || (scope === 'item' && !itemId)} className="ios-btn-primary px-4 py-2 text-sm">{busy ? '处理中…' : '保存知识资料'}</button>
@@ -138,7 +146,7 @@ const AIKnowledge: React.FC<{ accountId: string }> = ({ accountId }) => {
                 {busy ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}检索预览</button>
             </div>
             {matches?.length === 0 && <p role="status" className="text-sm text-amber-700">未匹配到资料。可补充主题或触发词；这不代表模型已知道答案。</p>}
-            {matches && matches.length > 0 && <div aria-label="检索结果" className="space-y-2">{matches.map(entry => <div key={entry.id} className="rounded-md bg-gray-50 p-3">
+            {matches && matches.length > 0 && <div aria-label="检索结果" className="space-y-2">{matches.map((entry, index) => <div key={`${entry.id}:${index}`} className="rounded-md bg-gray-50 p-3">
               <p className="font-semibold">{entry.topic} <span className="text-xs text-gray-500">来源：{entry.source}</span></p>
               <p className="mt-1 whitespace-pre-wrap break-words text-sm">{entry.content}</p>
             </div>)}</div>}

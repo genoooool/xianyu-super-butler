@@ -3,6 +3,7 @@
 import json
 import re
 import unicodedata
+from app.services.knowledge_documents import MAX_CONTENT_CHARS, MAX_OWNER_CHARS, knowledge_chunks
 
 
 SCOPE_PRIORITY = {"shared": 0, "account": 1, "item": 2}
@@ -72,7 +73,7 @@ class KnowledgeService:
                 ORDER BY k.updated_at DESC, k.id DESC
             """, (owner_id,)))
 
-    def save(self, owner_id, data, *, commit=True):
+    def save(self, owner_id, data, *, commit=True, create_only=False):
         scope = data.get("scope")
         cookie_id = str(data.get("cookie_id") or "").strip()
         item_id = str(data.get("item_id") or "").strip()
@@ -81,8 +82,8 @@ class KnowledgeService:
         content = str(data.get("content") or "").strip()
         if scope not in SCOPE_PRIORITY:
             raise ValueError("无效的资料范围")
-        if not topic or len(topic) > 80 or not content or len(content) > 2000 or len(keywords) > 300:
-            raise ValueError("主题必填且最多80字，内容必填且最多2000字，触发词最多300字")
+        if not topic or len(topic) > 80 or not content or len(content) > MAX_CONTENT_CHARS or len(keywords) > 300:
+            raise ValueError("主题必填且最多80字，内容必填且最多60000字，触发词最多300字")
         if len(cookie_id) > 128 or len(item_id) > 128:
             raise ValueError("无效的账号或商品编号")
         if (scope == "shared" and (cookie_id or item_id)) or (scope == "account" and item_id):
@@ -94,9 +95,16 @@ class KnowledgeService:
                 self.require_target(owner_id, cookie_id, item_id)
             key = (owner_id, scope, cookie_id, item_id, normalize(topic))
             existing = self.db.conn.execute("""
-                SELECT id FROM ai_knowledge_entries
+                SELECT id, length(content) FROM ai_knowledge_entries
                 WHERE owner_id=? AND scope=? AND cookie_id=? AND item_id=? AND topic_key=?
             """, key).fetchone()
+            if existing and create_only:
+                raise FileExistsError("此范围已有同名主题，请更换名称，或在原资料中编辑；导入不会覆盖旧资料")
+            total = self.db.conn.execute(
+                "SELECT COALESCE(SUM(length(content)),0) FROM ai_knowledge_entries WHERE owner_id=?", (owner_id,)
+            ).fetchone()[0]
+            if total - (existing[1] if existing else 0) + len(content) > MAX_OWNER_CHARS:
+                raise ValueError("知识内容总量最多100万字，请精简已有资料后重试")
             count = self.db.conn.execute(
                 "SELECT COUNT(*) FROM ai_knowledge_entries WHERE owner_id=?", (owner_id,)
             ).fetchone()[0]
@@ -168,12 +176,13 @@ class KnowledgeService:
             triggers = [normalize(word).strip() for word in re.split(r"[,，;；\n]+", entry["keywords"])]
             exact = any(word and word in query for word in [entry["topic_key"], *triggers])
             topic_matches = len(terms & self._terms(entry["topic"] + " " + entry["keywords"]))
-            body_matches = len(terms & self._terms(entry["content"]))
-            # Content-only matching needs two terms; generic single characters
-            # must not pull unrelated policies into the model context.
-            score = (100 if exact else 0) + topic_matches * 5 + min(body_matches, 5)
-            if exact or topic_matches or body_matches >= 2:
-                scored.append((score, entry))
+            # Resolve the WHOLE topic override above, then retrieve snippets.
+            # A shorter product document must not resurrect old store sections.
+            for index, chunk in enumerate(knowledge_chunks(entry["content"])):
+                body_matches = len(terms & self._terms(chunk))
+                score = (100 if exact else 0) + topic_matches * 5 + min(body_matches, 40) * 2
+                if exact or topic_matches or body_matches >= 2:
+                    scored.append((score, {**entry, "content": chunk, "chunk_index": index}))
         scored.sort(key=lambda pair: (-pair[0], -SCOPE_PRIORITY[pair[1]["scope"]], pair[1]["id"]))
         return [entry for _, entry in scored[:6]]
 

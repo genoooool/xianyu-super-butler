@@ -62,6 +62,10 @@ def main():
     def notifications():
         return {'available': False, 'active': False}
 
+    @app.get('/desktop/credentials')
+    def credentials():
+        return {'available': False, 'saved': False}
+
     @app.get('/cookies/details')
     def accounts():
         return [{'id': f'store-{key}', 'nickname': f'测试店铺 {key.upper()}', 'enabled': False}
@@ -155,6 +159,25 @@ def main():
             page.get_by_label('知识测试问题', exact=True).fill('天气怎么样')
             page.get_by_role('button', name='检索预览', exact=True).click()
             expect(page.get_by_role('status').filter(has_text='未匹配到资料')).to_be_visible()
+            # Preview is inert, cancel is inert, confirm persists original text.
+            scope.select_option('account')
+            document = '# 激活说明\n' + '背景介绍。\n' * 500 + '\n# 故障处理\n激活失败时请提供错误截图。\n<script>window.importExecuted=true</script>'
+            upload = page.get_by_label('选择知识文档', exact=True)
+            upload.set_input_files({'name': '说明书.md', 'mimeType': 'text/markdown', 'buffer': document.encode()})
+            expect(page.get_by_label('文档导入预览', exact=True)).to_be_visible()
+            expect(page.get_by_label('知识条目', exact=True)).not_to_contain_text('说明书')
+            assert page.evaluate('window.importExecuted') is None
+            page.get_by_role('button', name='取消导入', exact=True).click()
+            expect(page.get_by_label('文档导入预览', exact=True)).to_have_count(0)
+            upload.set_input_files({'name': '说明书.md', 'mimeType': 'text/markdown', 'buffer': document.encode()})
+            page.get_by_role('button', name='确认导入并启用', exact=True).click()
+            expect(page.get_by_label('知识条目', exact=True)).to_contain_text('说明书')
+            page.get_by_label('知识测试问题', exact=True).fill('激活失败错误截图')
+            page.get_by_role('button', name='检索预览', exact=True).click()
+            expect(page.get_by_label('检索结果', exact=True)).to_contain_text('激活失败时请提供错误截图')
+            page.get_by_role('button', name='编辑 说明书', exact=True).click()
+            expect(page.get_by_label('知识内容', exact=True)).to_have_value(document)
+            page.get_by_label('AI 知识库', exact=True).screenshot(path=str(args.output_dir / 'document-import.png'), animations='disabled')
             page.set_viewport_size({'width': 900, 'height': 1000})
             page.wait_for_function("document.querySelector('aside').getBoundingClientRect().right <= 0")
             page.get_by_label('AI 知识库', exact=True).screenshot(path=str(args.output_dir / 'knowledge-narrow.png'), animations='disabled')

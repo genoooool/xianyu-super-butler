@@ -14,7 +14,12 @@ export interface KnowledgeEntry extends KnowledgeDraft {
   id: number;
   source: string;
   updated_at: string;
+  chunk_index?: number;
 }
+export interface DocumentPreview { filename: string; topic: string; content: string; chunks: string[]; model_called: false }
+export const previewDocument = (file: File) => post<DocumentPreview>('/ai-knowledge/documents/preview', file,
+  { params: { filename: file.name }, headers: { 'Content-Type': 'application/octet-stream' } });
+export const importDocument = (entry: KnowledgeDraft) => post<{ entry: KnowledgeEntry }>('/ai-knowledge/documents/import', entry);
 export const listKnowledge = () => get<{ entries: KnowledgeEntry[] }>('/ai-knowledge');
 export const saveKnowledge = (entry: KnowledgeDraft) => post<{ entry: KnowledgeEntry }>('/ai-knowledge', entry);
 export const previewKnowledge = (cookie_id: string, item_id: string, message: string) =>

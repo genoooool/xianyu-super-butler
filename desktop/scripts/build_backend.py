@@ -8,18 +8,21 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DESKTOP = ROOT / "desktop"
 TAURI = DESKTOP / "src-tauri"
-DIST = DESKTOP / "dist-backend"
-BUILD = DESKTOP / "build-backend"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True, help="Rust target triple used by Tauri")
+    parser.add_argument("--layout", choices=("onedir", "onefile"), default="onedir" if sys.platform == "darwin" else "onefile")
+    parser.add_argument("--output-dir", type=Path, help="Fresh build directory; existing paths are never removed")
+    parser.add_argument("--stage-dir", type=Path, default=TAURI)
+    parser.add_argument("--static-dir", type=Path, default=ROOT / "static")
     return parser.parse_args()
 
 
@@ -34,31 +37,37 @@ def main() -> int:
     if os.name == "nt":
         output_name += ".exe"
 
-    shutil.rmtree(DIST, ignore_errors=True)
-    shutil.rmtree(BUILD, ignore_errors=True)
-    DIST.mkdir(parents=True, exist_ok=True)
-    BUILD.mkdir(parents=True, exist_ok=True)
-    (TAURI / "binaries").mkdir(parents=True, exist_ok=True)
+    if args.layout == "onedir" and sys.platform != "darwin":
+        raise ValueError("onedir packaging is currently verified on macOS only")
+    output = args.output_dir
+    if output is None:
+        output = Path(tempfile.mkdtemp(prefix="backend-build-", dir=DESKTOP))
+    else:
+        output.mkdir(parents=True, exist_ok=False)
+    dist, build = output / "dist", output / "build"
+    destination = (args.stage_dir / "resources" / "backend" if args.layout == "onedir"
+                   else args.stage_dir / "binaries" / output_name)
+    if destination.exists():
+        raise FileExistsError(f"Preserve/move the previous build before staging: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
 
     command = [
         sys.executable,
         "-m",
         "PyInstaller",
-        "--noconfirm",
-        "--clean",
-        "--onefile",
+        "--" + args.layout,
         "--name",
         "xianyu-backend",
         "--distpath",
-        str(DIST),
+        str(dist),
         "--workpath",
-        str(BUILD),
+        str(build),
         "--specpath",
-        str(BUILD),
+        str(build),
         "--paths",
         str(ROOT),
         "--add-data",
-        add_data(ROOT / "static", "static"),
+        add_data(args.static_dir, "static"),
         "--add-data",
         add_data(ROOT / "global_config.yml", "."),
         "--collect-all",
@@ -92,15 +101,18 @@ def main() -> int:
     command.append(str(ROOT / "Start.py"))
 
     print("Building backend sidecar:", " ".join(command))
-    subprocess.run(command, cwd=ROOT, check=True)
+    subprocess.run(command, cwd=ROOT, check=True,
+                   env=dict(os.environ, PYINSTALLER_CONFIG_DIR=str(output / "cache")))
 
-    built = DIST / ("xianyu-backend.exe" if os.name == "nt" else "xianyu-backend")
-    if not built.is_file():
+    built = dist / ("xianyu-backend.exe" if os.name == "nt" else "xianyu-backend")
+    if not built.exists():
         raise FileNotFoundError(f"PyInstaller output not found: {built}")
 
-    destination = TAURI / "binaries" / output_name
-    shutil.copy2(built, destination)
-    destination.chmod(destination.stat().st_mode | 0o111)
+    if args.layout == "onedir":
+        shutil.copytree(built, destination, symlinks=True)
+    else:
+        shutil.copy2(built, destination)
+        destination.chmod(destination.stat().st_mode | 0o111)
     print(f"Sidecar ready: {destination}")
     return 0
 

@@ -34,6 +34,7 @@ from app.file_log_collector import setup_file_logging, get_file_log_collector
 from app.desktop_notifications import desktop_notifications
 from app.routers.desktop_notifications import create_desktop_notifications_router
 from app.routers.ai_knowledge import create_ai_knowledge_router
+from app.routers.desktop_credentials import create_desktop_credentials_router
 from app.routers.delivery_block import create_delivery_block_router
 from utils.qr_login import qr_login_manager
 from utils.xianyu_utils import trans_cookies
@@ -353,6 +354,7 @@ else:
 app.include_router(create_delivery_block_router(get_current_user, db_manager))
 app.include_router(create_desktop_notifications_router(desktop_notifications, DESKTOP_ACCESS_TOKEN, verify_token, db_manager))
 app.include_router(create_ai_knowledge_router(get_current_user, db_manager))
+app.include_router(create_desktop_credentials_router(DESKTOP_ACCESS_TOKEN, DESKTOP_ACCESS_COOKIE, get_current_user, db_manager))
 logger.info("已注册发货拦截规则路由")
 
 # 初始化文件日志收集器
