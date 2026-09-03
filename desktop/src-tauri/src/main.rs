@@ -13,6 +13,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, RunEvent, WindowEvent,
 };
+#[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
@@ -20,7 +21,25 @@ use tauri_plugin_shell::{
 };
 use uuid::Uuid;
 
+#[cfg(target_os = "macos")]
+mod macos_notifications;
+
 struct BackendProcess(Mutex<Option<CommandChild>>);
+
+fn show_notification(app: &tauri::AppHandle, title: &str, body: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        macos_notifications::show(title, body).map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|error| error.to_string())
+}
 
 #[derive(serde::Deserialize)]
 struct NotificationBatch {
@@ -61,14 +80,7 @@ async fn watch_notifications(
                             "闲鱼工作台 · 测试提醒"
                         };
                         // Submitted is not a delivery receipt: macOS permission/DND decides visibility.
-                        if app
-                            .notification()
-                            .builder()
-                            .title(title)
-                            .body(body)
-                            .show()
-                            .is_err()
-                        {
+                        if show_notification(&app, title, &body).is_err() {
                             tokio::time::sleep(Duration::from_secs(5)).await;
                             continue;
                         }
@@ -165,6 +177,8 @@ fn set_splash_error(window: &tauri::WebviewWindow, message: &str) {
 
 fn start_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
+    #[cfg(target_os = "macos")]
+    macos_notifications::initialize();
     setup_tray(app)?;
 
     let window = app
