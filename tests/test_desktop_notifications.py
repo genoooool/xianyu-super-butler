@@ -2,6 +2,7 @@ import ast
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -82,7 +83,29 @@ class DesktopNotificationTests(unittest.TestCase):
         self.assertFalse(self.hub.test("other-session"))
         self.assertTrue(self.hub.test("owner-session"))
         self.assertFalse(self.hub.test("owner-session"))
-        self.assertEqual(self.poll(), {"cursor": 1, "count": 0, "test_count": 1})
+        self.assertEqual(self.poll(), {"cursor": 1, "count": 0, "test_count": 1, "sound": False})
+
+    def test_sound_toggle_preserves_queue_and_cursor(self):
+        self.publish()
+        self.hub.configure("owner-session", 1, True, sound=True)
+        batch = self.poll()
+        self.assertTrue(batch["sound"])
+        self.assertEqual(batch["count"], 1)
+        self.hub.configure("owner-session", 1, True, sound=False)
+        self.assertEqual(self.poll(), {**batch, "sound": False})
+        self.assertEqual(self.poll(batch["cursor"])["count"], 0)
+
+    def test_sound_session_isolation_disable_and_revocation(self):
+        self.hub.configure("owner-session", 1, True, sound=True)
+        self.hub.configure("other", 2, False, sound=False)
+        self.assertTrue(self.poll()["sound"])
+        self.hub.configure("owner-session", 1, False, sound=True)
+        self.assertFalse(self.poll()["sound"])
+        self.hub.configure("owner-session", 1, True, sound=True)
+        self.assertFalse(self.hub.poll(0, lambda *_: False)["sound"])
+        self.hub.configure("owner-session", 1, True, sound=True)
+        self.hub.configure("other", 2, True)  # Older clients remain silent.
+        self.assertFalse(self.hub.poll(0, lambda *_: True)["sound"])
 
     def test_queue_and_dedup_are_bounded(self):
         for index in range(100):
@@ -143,6 +166,52 @@ class DesktopNotificationRouteTests(unittest.TestCase):
         client = TestClient(app)
         self.assertFalse(client.get("/desktop/notifications/status", headers={"Authorization": "Bearer a"}).json()["available"])
         self.assertEqual(client.get("/desktop/notifications/poll").status_code, 404)
+
+    def test_sound_preference_roundtrip_and_capability(self):
+        with patch("app.routers.desktop_notifications.sys.platform", "darwin"):
+            self.assertTrue(self.client.get("/desktop/notifications/status", headers={"Authorization": "Bearer a"}).json()["sound_available"])
+        with patch("app.routers.desktop_notifications.sys.platform", "win32"):
+            self.assertFalse(self.client.get("/desktop/notifications/status", headers={"Authorization": "Bearer a"}).json()["sound_available"])
+        response = self.client.post("/desktop/notifications/session", json={"enabled": True, "sound": True},
+                                    headers={"Authorization": "Bearer a"})
+        self.assertEqual(response.status_code, 200)
+        self.hub.test("a")
+        batch = self.client.get("/desktop/notifications/poll", headers={"X-Xianyu-Desktop-Token": "launch-secret"}).json()
+        self.assertTrue(batch["sound"])
+        self.assertEqual(batch["test_count"], 1)
+        self.configure(enabled=False)
+        self.assertFalse(self.hub.poll(0, lambda *_: True)["sound"])
+
+    def test_saved_preferences_survive_new_router_and_are_user_scoped(self):
+        saved = {}
+        store = Mock()
+        store.get_user_setting.side_effect = lambda owner, key: saved.get((owner, key))
+        def save(owner, key, value, description):
+            saved[(owner, key)] = {"value": value}
+            return True
+        store.set_user_setting.side_effect = save
+        def new_client():
+            app = FastAPI()
+            app.include_router(create_desktop_notifications_router(DesktopNotifications(), "secret", self.verify, store))
+            return TestClient(app)
+        client = new_client()
+        auth = {"Authorization": "Bearer a"}
+        endpoint = "/desktop/notifications/session"
+        client.post(endpoint, headers=auth, json={"enabled": True, "sound": True})
+        store.set_user_setting.assert_not_called()  # Heartbeats do not write.
+        self.assertEqual(client.post(endpoint, headers=auth,
+                                    json={"enabled": True, "sound": False, "save": True}).status_code, 200)
+        restarted = new_client()
+        self.assertEqual(restarted.get("/desktop/notifications/status", headers=auth).json()["preference"],
+                         {"enabled": True, "sound": False})
+        self.assertIsNone(restarted.get("/desktop/notifications/status", headers={"Authorization": "Bearer b"}).json()["preference"])
+        store.set_user_setting.return_value = False
+        store.set_user_setting.side_effect = None
+        failed = client.post(endpoint, headers=auth, json={"enabled": False, "sound": False, "save": True})
+        self.assertEqual(failed.status_code, 500)
+        self.assertTrue(client.get("/desktop/notifications/status", headers=auth).json()["active"])
+        saved[(1, "desktop_notification_preferences")] = {"value": "not-json"}
+        self.assertIsNone(client.get("/desktop/notifications/status", headers=auth).json()["preference"])
 
 
 class StartupImportTests(unittest.TestCase):

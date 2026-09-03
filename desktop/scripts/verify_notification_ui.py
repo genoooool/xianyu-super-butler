@@ -84,33 +84,81 @@ def main():
                 toggle = page.get_by_role('switch', name='新消息弹窗', exact=True)
                 toggle.wait_for()
                 assert toggle.get_attribute('aria-checked') == 'true'
+                sound = page.get_by_role('switch', name='消息提示音', exact=True)
+                sound.wait_for()
+                assert sound.get_attribute('aria-checked') == 'true'
+                failing_session = '**/desktop/notifications/session'
+                page.route(failing_session, lambda route: route.fulfill(status=503, json={'detail': 'offline test'}))
+                sound.click()
+                page.get_by_text('提示音设置未保存，请重试', exact=True).wait_for()
+                assert sound.get_attribute('aria-checked') == 'true'
+                assert page.evaluate("localStorage.getItem('desktop_message_notification_sound')") is None
+                page.unroute(failing_session)
                 test = page.get_by_role('button', name='测试弹窗', exact=True)
                 test.click()
                 page.get_by_text('测试提醒已提交；是否弹出取决于系统通知权限和免打扰设置', exact=True).wait_for()
                 native = {'X-Xianyu-Desktop-Token': secret}
                 batch = context.request.get(base + '/desktop/notifications/poll', headers=native).json()
-                assert batch['test_count'] == 1 and batch['count'] == 0, batch
+                assert batch['test_count'] == 1 and batch['count'] == 0 and batch['sound'], batch
                 assert context.request.get(base + '/desktop/notifications/poll').status == 403
                 assert context.request.get(base + '/desktop/notifications/poll', params={'after': batch['cursor']}, headers=native).json()['test_count'] == 0
                 page.screenshot(path=str(args.output_dir / 'notification-settings.png'), animations='disabled')
+                sound.click()
+                page.wait_for_function("document.querySelector('[aria-label=消息提示音]').getAttribute('aria-checked') === 'false'")
+                quiet = context.request.get(base + '/desktop/notifications/poll', headers=native).json()
+                assert quiet == {**batch, 'sound': False}, quiet
+                page.reload()
+                sound.wait_for()
+                assert sound.get_attribute('aria-checked') == 'false'
+                # Sound preferences persist independently; disabling banners also
+                # disables this control and clears already queued notifications.
                 toggle.click()
-                page.wait_for_function("localStorage.getItem('desktop_message_notifications') === 'false'")
+                page.wait_for_function("document.querySelector('[aria-label=新消息弹窗]').getAttribute('aria-checked') === 'false'")
                 assert test.is_disabled()
-                assert context.request.get(base + '/desktop/notifications/poll', headers=native).json()['test_count'] == 0
+                assert sound.is_disabled()
+                disabled = context.request.get(base + '/desktop/notifications/poll', headers=native).json()
+                assert disabled['test_count'] == 0 and not disabled['sound']
                 page.reload()
                 toggle.wait_for()
                 assert toggle.get_attribute('aria-checked') == 'false'
                 toggle.click()
-                page.wait_for_function("localStorage.getItem('desktop_message_notifications') === 'true'")
+                page.wait_for_function("document.querySelector('[aria-label=新消息弹窗]').getAttribute('aria-checked') === 'true'")
+                assert sound.get_attribute('aria-checked') == 'false'
+                sound.click()
+                page.wait_for_function("document.querySelector('[aria-label=消息提示音]').getAttribute('aria-checked') === 'true'")
+                assert context.request.get(base + '/desktop/notifications/poll', headers=native).json()['sound']
+                sound.click()
+                page.wait_for_function("document.querySelector('[aria-label=消息提示音]').getAttribute('aria-checked') === 'false'")
                 page.get_by_role('button', name='总览', exact=True).click()
                 page.get_by_role('heading', name='运营概览', exact=True).wait_for()
                 # Logout from another page must revoke the native session too.
                 page.get_by_role('button', name='退出登录', exact=True).click()
                 page.get_by_role('button', name='登录', exact=True).wait_for()
-                assert context.request.get(base + '/desktop/notifications/poll', headers=native).json()['count'] == 0
+                logged_out = context.request.get(base + '/desktop/notifications/poll', headers=native).json()
+                assert logged_out['count'] == 0 and not logged_out['sound']
+                assert not errors, errors
+                context.close()
+                # A fresh webview has no localStorage (as with a new launch port).
+                # Restore the user's quiet preference from the real packaged DB.
+                context = browser.new_context(viewport={'width': 1440, 'height': 1000})
+                page = context.new_page()
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                page.route('**/*', lambda route: route.continue_() if route.request.url.startswith(base + '/') else route.abort())
+                page.goto(base + '/desktop/bootstrap?' + urllib.parse.urlencode({'token': secret}))
+                assert page.evaluate("localStorage.getItem('desktop_message_notification_sound')") is None
+                page.locator('input[type="text"]').fill('admin')
+                page.locator('input[type="password"]').fill('admin123')
+                page.get_by_role('button', name='登录', exact=True).click()
+                page.get_by_role('heading', name='运营概览', exact=True).wait_for(timeout=20000)
+                page.wait_for_function("localStorage.getItem('desktop_message_notification_sound') === 'false'")
+                page.get_by_role('button', name='系统设置', exact=True).click()
+                sound = page.get_by_role('switch', name='消息提示音', exact=True)
+                sound.wait_for()
+                assert sound.get_attribute('aria-checked') == 'false'
+                assert not context.request.get(base + '/desktop/notifications/poll', headers=native).json()['sound']
                 assert not errors, errors
                 browser.close()
-                print('Passed: packaged knowledge schema/router/auth/save, initial-page-only chunks, global registration, generic test queue, native guard, disable persistence, navigation, logout, no JS errors', flush=True)
+                print('Passed: packaged knowledge schema/router/auth/save, initial-page-only chunks, global registration, generic test queue, native guard, sound toggle/rollback/fresh-webview persistence, disable persistence, navigation, logout, no JS errors', flush=True)
         finally:
             children = owner.children(recursive=True) if process.poll() is None else []
             process.terminate()

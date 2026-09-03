@@ -351,7 +351,7 @@ else:
     logger.warning("⚠️ 刮刮乐远程控制路由未注册")
 
 app.include_router(create_delivery_block_router(get_current_user, db_manager))
-app.include_router(create_desktop_notifications_router(desktop_notifications, DESKTOP_ACCESS_TOKEN, verify_token))
+app.include_router(create_desktop_notifications_router(desktop_notifications, DESKTOP_ACCESS_TOKEN, verify_token, db_manager))
 app.include_router(create_ai_knowledge_router(get_current_user, db_manager))
 logger.info("已注册发货拦截规则路由")
 

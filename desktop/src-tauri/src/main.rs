@@ -26,19 +26,28 @@ mod macos_notifications;
 
 struct BackendProcess(Mutex<Option<CommandChild>>);
 
-fn show_notification(app: &tauri::AppHandle, title: &str, body: &str) -> Result<(), String> {
+fn show_notification(
+    app: &tauri::AppHandle,
+    title: &str,
+    body: &str,
+    sound: bool,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let _ = app;
-        macos_notifications::show(title, body).map_err(|error| error.to_string())
+        macos_notifications::show(title, body, sound).map_err(|error| error.to_string())
     }
     #[cfg(not(target_os = "macos"))]
-    app.notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
-        .map_err(|error| error.to_string())
+    {
+        // Sound preference is currently exposed only by the macOS client.
+        let _ = sound;
+        app.notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -46,6 +55,8 @@ struct NotificationBatch {
     cursor: u64,
     count: u32,
     test_count: u32,
+    #[serde(default)]
+    sound: bool,
 }
 
 async fn watch_notifications(
@@ -80,7 +91,7 @@ async fn watch_notifications(
                             "闲鱼工作台 · 测试提醒"
                         };
                         // Submitted is not a delivery receipt: macOS permission/DND decides visibility.
-                        if show_notification(&app, title, &body).is_err() {
+                        if show_notification(&app, title, &body, batch.sound).is_err() {
                             tokio::time::sleep(Duration::from_secs(5)).await;
                             continue;
                         }

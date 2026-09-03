@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
 #import <os/log.h>
+#include <stdbool.h>
 
 @interface XianyuNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
 @end
@@ -12,7 +13,11 @@
     // Foreground apps are silent unless they explicitly request presentation.
     // These ordinary options still respect system authorization and Focus.
     os_log_info(OS_LOG_DEFAULT, "Xianyu notification: foreground banner requested");
-    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList);
+    UNNotificationPresentationOptions options = UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList;
+    if (notification.request.content.sound != nil) {
+        options |= UNNotificationPresentationOptionSound;
+    }
+    completionHandler(options);
 }
 @end
 
@@ -44,18 +49,22 @@ static void enqueueNotification(UNUserNotificationCenter *center, UNMutableNotif
                          error.domain, (long)error.code);
         } else {
             // Accepted by macOS does not imply a banner was visible.
-            os_log_info(OS_LOG_DEFAULT, "Xianyu notification: request %{public}@ accepted",
-                        request.identifier);
+            os_log_info(OS_LOG_DEFAULT, "Xianyu notification: request %{public}@ accepted (sound requested: %{public}@)",
+                        request.identifier, content.sound ? @"yes" : @"no");
         }
     }];
 }
 
 static void sendNotification(UNUserNotificationCenter *center, UNMutableNotificationContent *content) {
     [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
-        if (settings.authorizationStatus == UNAuthorizationStatusNotDetermined) {
-            // Ask only on a message/test, never on startup. No sound, badge or
-            // critical/time-sensitive authorization; never override a denial.
-            [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert
+        if (settings.authorizationStatus == UNAuthorizationStatusNotDetermined ||
+            (settings.authorizationStatus == UNAuthorizationStatusAuthorized && content.sound != nil)) {
+            // Ask only on a message/test. Include sound when the user enables it,
+            // including upgrades from our old alert-only build. Repeated requests
+            // do not re-prompt or override user settings. Never request critical alerts.
+            UNAuthorizationOptions options = UNAuthorizationOptionAlert;
+            if (content.sound != nil) options |= UNAuthorizationOptionSound;
+            [center requestAuthorizationWithOptions:options
                                   completionHandler:^(BOOL granted, NSError *error) {
                 if (error) {
                     os_log_error(OS_LOG_DEFAULT, "Xianyu notification: authorization failed (%{public}@, %ld)",
@@ -73,11 +82,12 @@ static void sendNotification(UNUserNotificationCenter *center, UNMutableNotifica
     }];
 }
 
-void xianyu_notifications_show(const char *title, const char *body) {
+void xianyu_notifications_show(const char *title, const char *body, bool sound) {
     @autoreleasepool {
         UNMutableNotificationContent *content = [UNMutableNotificationContent new];
         content.title = [NSString stringWithUTF8String:title];
         content.body = [NSString stringWithUTF8String:body];
+        content.sound = sound ? [UNNotificationSound defaultSound] : nil;
         // Only generic message counts arrive here, never buyer names or text.
         sendNotification(notificationCenter, content);
     }

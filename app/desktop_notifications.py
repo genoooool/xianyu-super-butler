@@ -18,16 +18,20 @@ class DesktopNotifications:
         self.seen = OrderedDict()
         self.sequence = 0
         self.session = None
+        self.sound = False
 
-    def configure(self, token, user_id, enabled):
+    def configure(self, token, user_id, enabled, sound=False):
         with self.lock:
             if not enabled:
                 if self.session and self.session[0] == token:
                     self.session = None
+                    self.sound = False
                     self.events.clear()
             elif not self.session or self.session[:2] != (token, user_id):
                 self.session = (token, user_id, self.clock())
                 self.events.clear()
+            if enabled:
+                self.sound = bool(sound)
             return {"available": True, "active": bool(self.session and self.session[0] == token)}
 
     def status(self, token):
@@ -86,10 +90,11 @@ class DesktopNotifications:
             now = self.clock()
             if self.session and not validate(self.session[0], self.session[1]):
                 self.session = None
+                self.sound = False
                 self.events.clear()
             eligible = [event for event in self.events if event[0] > after and event[1] >= now - self.ttl]
             return {"cursor": self.sequence, "count": sum(not e[2] for e in eligible),
-                    "test_count": sum(e[2] for e in eligible)}
+                    "test_count": sum(e[2] for e in eligible), "sound": self.sound}
 
 
 desktop_notifications = DesktopNotifications()
