@@ -29,7 +29,7 @@ def main() -> int:
         TAURI / "src" / "main.rs",
         TAURI / "capabilities" / "default.json",
         TAURI / "binaries" / ".gitkeep",
-        TAURI / "resources" / "playwright" / ".gitkeep",
+        TAURI / "resources" / "playwright",
     ]
     missing = [str(path.relative_to(ROOT)) for path in required if not path.exists()]
     require(not missing, "Missing desktop packaging files: " + ", ".join(missing))
