@@ -145,16 +145,19 @@ jobs:
 
       - name: Install Tauri CLI
         shell: bash
-        run: npm install --prefix desktop --no-audit --no-fund
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
 
       - name: Generate platform icons
         shell: bash
-        run: npm --prefix desktop run icon
+        working-directory: desktop
+        run: npm run icon
 
       - name: Build Tauri installer
         shell: bash
+        working-directory: desktop
         run: >-
-          npm --prefix desktop run tauri -- build
+          npm run tauri -- build
           --target "${{ matrix.target }}"
           --bundles "${{ matrix.bundles }}"
 
