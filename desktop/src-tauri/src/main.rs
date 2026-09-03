@@ -4,7 +4,7 @@ use std::{
     net::TcpListener,
     path::Path,
     sync::Mutex,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use tauri::{
@@ -13,6 +13,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, RunEvent, WindowEvent,
 };
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
@@ -20,6 +21,65 @@ use tauri_plugin_shell::{
 use uuid::Uuid;
 
 struct BackendProcess(Mutex<Option<CommandChild>>);
+
+#[derive(serde::Deserialize)]
+struct NotificationBatch {
+    cursor: u64,
+    count: u32,
+    test_count: u32,
+}
+
+async fn watch_notifications(
+    app: tauri::AppHandle,
+    client: reqwest::Client,
+    base_url: String,
+    token: String,
+) {
+    let mut cursor = 0;
+    loop {
+        // Loopback only: no extra requests to Xianyu, and no webview IPC grants.
+        let response = client
+            .get(format!(
+                "{base_url}/desktop/notifications/poll?after={cursor}"
+            ))
+            .header("Cookie", format!("xianyu_desktop_access={token}"))
+            .header("X-Xianyu-Desktop-Token", &token)
+            .send()
+            .await;
+        if let Ok(response) = response {
+            if response.status().is_success() {
+                if let Ok(batch) = response.json::<NotificationBatch>().await {
+                    if batch.count > 0 || batch.test_count > 0 {
+                        let body = if batch.count > 0 {
+                            format!("收到 {} 条新消息，请打开消息中心查看。", batch.count)
+                        } else {
+                            "这是一条测试提醒，没有向买家发送消息。".to_owned()
+                        };
+                        let title = if batch.count > 0 {
+                            "闲鱼工作台 · 新消息"
+                        } else {
+                            "闲鱼工作台 · 测试提醒"
+                        };
+                        // Submitted is not a delivery receipt: macOS permission/DND decides visibility.
+                        if app
+                            .notification()
+                            .builder()
+                            .title(title)
+                            .body(body)
+                            .show()
+                            .is_err()
+                        {
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            continue;
+                        }
+                    }
+                    cursor = batch.cursor;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
 
 fn append_launcher_log(data_dir: &Path, message: &str) {
     let log_dir = data_dir.join("logs");
@@ -104,12 +164,18 @@ fn set_splash_error(window: &tauri::WebviewWindow, message: &str) {
 }
 
 fn start_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let started = Instant::now();
     setup_tray(app)?;
 
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "找不到主窗口"))?;
-    let data_dir = app.path().app_local_data_dir()?;
+    // Packaging acceptance gets a fresh empty profile, never real seller data.
+    let data_dir = if std::env::args().any(|arg| arg == "--desktop-smoke") {
+        std::env::temp_dir().join(format!("xianyu-desktop-smoke-{}", Uuid::new_v4()))
+    } else {
+        app.path().app_local_data_dir()?
+    };
     fs::create_dir_all(&data_dir)?;
 
     let playwright_dir = app.path().resolve("playwright", BaseDirectory::Resource)?;
@@ -176,8 +242,10 @@ fn start_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
     let health_window = window.clone();
     let health_data_dir = data_dir.clone();
     let health_token = desktop_token.clone();
+    let notification_app = app.handle().clone();
     tauri::async_runtime::spawn(async move {
         let client = match reqwest::Client::builder()
+            .no_proxy() // The launch secret must never leave the loopback interface.
             .timeout(Duration::from_secs(3))
             .build()
         {
@@ -192,7 +260,7 @@ fn start_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
 
         for attempt in 1..=120 {
             if attempt == 20 {
-                set_splash_status(&health_window, "首次解压后端组件，仍在启动…");
+                set_splash_status(&health_window, "正在加载后端组件…");
             } else if attempt == 60 {
                 set_splash_status(&health_window, "正在初始化数据库和浏览器组件…");
             }
@@ -205,7 +273,13 @@ fn start_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
                 .unwrap_or(false);
 
             if healthy {
-                append_launcher_log(&health_data_dir, "backend health check passed");
+                append_launcher_log(
+                    &health_data_dir,
+                    &format!(
+                        "backend health check passed in {:.2}s",
+                        started.elapsed().as_secs_f64()
+                    ),
+                );
                 let bootstrap_url = format!("{base_url}/desktop/bootstrap?token={health_token}");
                 match tauri::Url::parse(&bootstrap_url) {
                     Ok(url) => {
@@ -221,6 +295,7 @@ fn start_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
                         set_splash_error(&health_window, &message);
                     }
                 }
+                watch_notifications(notification_app, client, base_url, health_token).await;
                 return;
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -264,6 +339,7 @@ fn stop_backend(app: &tauri::AppHandle) {
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(start_backend)
         .build(tauri::generate_context!())
         .expect("failed to build desktop application");

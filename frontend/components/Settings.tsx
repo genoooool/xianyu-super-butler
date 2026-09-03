@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import DesktopNotificationSettings from './DesktopNotificationSettings';
 import {
   Database,
   Eye,
@@ -236,6 +237,7 @@ const Settings: React.FC = () => {
 
       {activeSection === 'general' && (
         <div className="grid gap-4 xl:grid-cols-2">
+          <DesktopNotificationSettings />
           <section className="section-panel">
             <SectionHeader
               title="访问与安全"

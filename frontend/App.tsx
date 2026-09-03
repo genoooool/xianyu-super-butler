@@ -2,7 +2,9 @@ import React, { Suspense, lazy, useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import GlobalFeedback from './components/GlobalFeedback';
 import ThemeToggle from './components/ThemeToggle';
-import { login, verifyToken, getPublicSettings, register, sendVerificationCode } from './services/api';
+import { login, logout, verifyToken, getPublicSettings, register, sendVerificationCode } from './services/api';
+import { useDesktopNotifications } from './services/desktopNotifications';
+import { notify } from './services/feedback';
 import { ShieldCheck, ArrowRight, Loader2, User, Lock, Menu, Mail, KeyRound, CheckCircle2 } from 'lucide-react';
 
 const Dashboard = lazy(() => import('./components/Dashboard'));
@@ -45,6 +47,8 @@ const pageLabels: Record<string, string> = {
 const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('active_page') || 'dashboard');
+  const [visitedTabs, setVisitedTabs] = useState(() => new Set([activeTab]));
+  useDesktopNotifications(isLoggedIn);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -462,15 +466,22 @@ const App: React.FC = () => {
       <Sidebar 
         activeTab={activeTab} 
         setActiveTab={(tab) => {
+          setVisitedTabs(previous => new Set([...previous, tab]));
           setActiveTab(tab);
           setMobileMenuOpen(false);
         }}
         mobileOpen={mobileMenuOpen}
         onMobileClose={() => setMobileMenuOpen(false)}
-        onLogout={() => {
+        onLogout={async () => {
+          try {
+            await logout();
             localStorage.removeItem('auth_token');
             setIsAdmin(false);
             setIsLoggedIn(false);
+            setVisitedTabs(new Set([activeTab]));
+          } catch {
+            notify('退出未完成，请重试；完全退出软件也会停止本机提醒', 'error');
+          }
         }} 
       />
       
@@ -497,47 +508,47 @@ const App: React.FC = () => {
             : 'mx-auto max-w-[1320px] p-4 pb-10 sm:p-6 lg:p-8'
         }>
           <section hidden={activeTab !== 'dashboard'}>
-            <Suspense fallback={activeTab === 'dashboard' ? <PageLoader /> : null}><Dashboard /></Suspense>
+            {visitedTabs.has('dashboard') && <Suspense fallback={<PageLoader />}><Dashboard /></Suspense>}
           </section>
           <section hidden={activeTab !== 'accounts'}>
-            <Suspense fallback={activeTab === 'accounts' ? <PageLoader /> : null}><AccountList /></Suspense>
+            {visitedTabs.has('accounts') && <Suspense fallback={<PageLoader />}><AccountList /></Suspense>}
           </section>
           <section hidden={activeTab !== 'items'}>
-            <Suspense fallback={activeTab === 'items' ? <PageLoader /> : null}><ItemList /></Suspense>
+            {visitedTabs.has('items') && <Suspense fallback={<PageLoader />}><ItemList /></Suspense>}
           </section>
           <section hidden={activeTab !== 'product-automation'}>
-            <Suspense fallback={activeTab === 'product-automation' ? <PageLoader /> : null}><ProductAutomation /></Suspense>
+            {visitedTabs.has('product-automation') && <Suspense fallback={<PageLoader />}><ProductAutomation /></Suspense>}
           </section>
           <section hidden={activeTab !== 'orders'}>
-            <Suspense fallback={activeTab === 'orders' ? <PageLoader /> : null}><OrderList /></Suspense>
+            {visitedTabs.has('orders') && <Suspense fallback={<PageLoader />}><OrderList /></Suspense>}
           </section>
           <section hidden={activeTab !== 'cards'}>
-            <Suspense fallback={activeTab === 'cards' ? <PageLoader /> : null}><CardList /></Suspense>
+            {visitedTabs.has('cards') && <Suspense fallback={<PageLoader />}><CardList /></Suspense>}
           </section>
           <section hidden={activeTab !== 'auto-reply'}>
-            <Suspense fallback={activeTab === 'auto-reply' ? <PageLoader /> : null}><Keywords mode="reply" /></Suspense>
+            {visitedTabs.has('auto-reply') && <Suspense fallback={<PageLoader />}><Keywords mode="reply" /></Suspense>}
           </section>
           <section hidden={activeTab !== 'ai-reply'}>
-            <Suspense fallback={activeTab === 'ai-reply' ? <PageLoader /> : null}><AIReply /></Suspense>
+            {visitedTabs.has('ai-reply') && <Suspense fallback={<PageLoader />}><AIReply /></Suspense>}
           </section>
           <section hidden={activeTab !== 'messages'} className="h-full min-h-0">
-            <Suspense fallback={activeTab === 'messages' ? <PageLoader /> : null}>
+            {visitedTabs.has('messages') && <Suspense fallback={<PageLoader />}>
               <MessageManagement isActive={activeTab === 'messages'} />
-            </Suspense>
+            </Suspense>}
           </section>
           <section hidden={activeTab !== 'notifications'}>
-            <Suspense fallback={activeTab === 'notifications' ? <PageLoader /> : null}>
+            {visitedTabs.has('notifications') && <Suspense fallback={<PageLoader />}>
               <NotificationsAndLogs isAdmin={isAdmin} />
-            </Suspense>
+            </Suspense>}
           </section>
           <section hidden={activeTab !== 'settings'}>
-            <Suspense fallback={activeTab === 'settings' ? <PageLoader /> : null}><Settings /></Suspense>
+            {visitedTabs.has('settings') && <Suspense fallback={<PageLoader />}><Settings /></Suspense>}
           </section>
           <section hidden={activeTab !== 'buyer-interaction'}>
-            <Suspense fallback={activeTab === 'buyer-interaction' ? <PageLoader /> : null}><BuyerInteraction /></Suspense>
+            {visitedTabs.has('buyer-interaction') && <Suspense fallback={<PageLoader />}><BuyerInteraction /></Suspense>}
           </section>
           <section hidden={activeTab !== 'about'}>
-            <Suspense fallback={activeTab === 'about' ? <PageLoader /> : null}><About /></Suspense>
+            {visitedTabs.has('about') && <Suspense fallback={<PageLoader />}><About /></Suspense>}
           </section>
         </div>
       </main>

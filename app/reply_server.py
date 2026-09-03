@@ -10,7 +10,6 @@ import time
 import json
 import os
 import re
-import pandas as pd
 import io
 import asyncio
 import sqlite3
@@ -32,7 +31,8 @@ from app import cookie_manager
 from app.db_manager import db_manager
 from app.product_automation import ProductAutomationService
 from app.file_log_collector import setup_file_logging, get_file_log_collector
-from app.ai_reply_engine import ai_reply_engine
+from app.desktop_notifications import desktop_notifications
+from app.routers.desktop_notifications import create_desktop_notifications_router
 from app.routers.delivery_block import create_delivery_block_router
 from utils.qr_login import qr_login_manager
 from utils.xianyu_utils import trans_cookies
@@ -350,6 +350,7 @@ else:
     logger.warning("⚠️ 刮刮乐远程控制路由未注册")
 
 app.include_router(create_delivery_block_router(get_current_user, db_manager))
+app.include_router(create_desktop_notifications_router(desktop_notifications, DESKTOP_ACCESS_TOKEN, verify_token))
 logger.info("已注册发货拦截规则路由")
 
 # 初始化文件日志收集器
@@ -373,6 +374,13 @@ async def require_desktop_access_cookie(request, call_next):
 # 添加请求日志中间件
 @app.middleware("http")
 async def log_requests(request, call_next):
+    if request.url.path == '/desktop/notifications/poll':
+        # Native queue polling is frequent and carries no business operation.
+        # Keep errors visible without writing two success lines every 2 seconds.
+        response = await call_next(request)
+        if response.status_code >= 400:
+            logger.warning(f"Desktop notification poll failed: {response.status_code}")
+        return response
     start_time = time.time()
 
     logger.info(f"🌐 API请求: {request.method} {request.url.path}")
@@ -689,6 +697,7 @@ async def verify(user_info: Optional[Dict[str, Any]] = Depends(verify_token)):
 @app.post('/logout')
 async def logout(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
     if credentials and credentials.credentials in SESSION_TOKENS:
+        desktop_notifications.configure(credentials.credentials, SESSION_TOKENS[credentials.credentials]['user_id'], False)
         del SESSION_TOKENS[credentials.credentials]
     return {"message": "已登出"}
 
@@ -4414,6 +4423,7 @@ def export_keywords(cid: str, current_user: Dict[str, Any] = Depends(get_current
         raise HTTPException(status_code=403, detail="无权限访问该Cookie")
 
     try:
+        import pandas as pd
         # 获取关键词数据（包含类型信息）
         keywords = db_manager.get_keywords_with_type(cid)
 
@@ -4504,6 +4514,7 @@ async def import_keywords(cid: str, file: UploadFile = File(...), current_user: 
     if not file.filename.endswith(('.xlsx', '.xls')):
         raise HTTPException(status_code=400, detail="请上传Excel文件(.xlsx或.xls)")
 
+    import pandas as pd
     try:
         # 读取Excel文件
         contents = await file.read()
@@ -6088,6 +6099,7 @@ async def test_ai_reply(cookie_id: str, test_data: dict,
         if cookie_id not in cookie_manager.manager.cookies:
             raise HTTPException(status_code=404, detail='账号不存在')
 
+        from app.ai_reply_engine import ai_reply_engine
         # 检查是否启用AI回复
         if not ai_reply_engine.is_ai_enabled(cookie_id):
             raise HTTPException(status_code=400, detail='该账号未启用AI回复')

@@ -10118,6 +10118,16 @@ class XianyuLive:
                                 f"📱 消息命中过滤规则“{matched_filter}”，跳过外部通知"
                             )
                         else:
+                            from app.desktop_notifications import desktop_notifications
+                            try:
+                                desktop_notifications.publish(
+                                    user_id=self.user_id, account_id=self.cookie_id,
+                                    sender_id=send_user_id, own_id=self.myid, chat_id=chat_id,
+                                    timestamp_ms=create_time, message_id=self._extract_message_id(message),
+                                    content=send_message, session_type=session_type,
+                                )
+                            except Exception:
+                                logger.warning("本机提醒入队失败，继续处理原有通知和回复")
                             # 只对个人消息发送通知
                             await self.send_notification(send_user_name, send_user_id, send_message, item_id, chat_id)
                 except Exception as notify_error:
