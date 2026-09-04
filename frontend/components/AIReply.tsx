@@ -184,7 +184,7 @@ const AIReply: React.FC = () => {
                 {selectedAccount?.nickname || selectedAccount?.remark || selectedAccountId}
               </div>
               <p className="mt-1 text-sm text-gray-500">
-                回复优先级：关键词回复 → 人工智能回复 → 默认回复。AI失败时不会中断消息处理。
+                固定 QA 在「自动回复」中设置：先匹配常见问法，再识别意图，命中后原样发送。无匹配才使用知识资料；含糊或出错时不擅自报价。
               </p>
             </div>
             <label className="flex cursor-pointer items-center gap-3">

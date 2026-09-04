@@ -6796,8 +6796,8 @@ class XianyuLive:
         return response.get("body", {}) if isinstance(response, dict) else {}
 
     async def send_im_text(self, cid, toid, text):
-        text = str(text or "").strip()
-        if not text:
+        text = str(text or "")
+        if not text.strip():
             raise ValueError("消息内容不能为空")
         if len(text) > 2000:
             raise ValueError("消息内容不能超过 2000 个字符")
@@ -9552,6 +9552,51 @@ class XianyuLive:
             # 构造用户URL
             user_url = f'https://www.goofish.com/personal?userId={send_user_id}'
 
+            # Fixed QA owns its payload. The classifier receives questions/IDs, never answer text or images.
+            from app.services.fixed_replies import FixedReplies, FixedDecision, CLARIFY_REPLY
+            from app.services.reply_delivery import send_parts
+            from app.ai_reply_engine import ai_reply_engine
+            fixed = FixedReplies(db_manager)
+            ai_settings = db_manager.get_ai_reply_settings(self.cookie_id)
+            classifier = None
+            if ai_settings.get('ai_enabled'):
+                classifier = lambda messages: ai_reply_engine._generate_with_retry(ai_settings, messages, self.cookie_id)
+            try:
+                decision = await asyncio.to_thread(fixed.choose, self.cookie_id, item_id, send_message, classifier)
+            except Exception:
+                decision = FixedDecision('clarify', reason='rule_load_failed')
+            if decision.status != 'no_match':
+                def fixed_send_allowed():
+                    if not AUTO_REPLY.get('enabled', True) or pause_manager.is_chat_paused(chat_id, self.cookie_id):
+                        return False
+                    if db_manager.matches_message_filter(self.cookie_id, send_message, 'skip_reply'):
+                        return False
+                    if decision.semantic and not db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled'):
+                        return False
+                    return bool(decision.snapshot) and fixed.revalidate(decision, self.cookie_id, item_id)
+                rule = decision.rule or {}
+                text = rule.get('content', '') if decision.status == 'matched' else CLARIFY_REPLY
+                images = rule.get('image_ids', []) if decision.status == 'matched' else []
+                owner = fixed.knowledge._account_owner(self.cookie_id)
+                log_id = self._add_reply_decision_log(message_data, **log_context,
+                    process_status='success', decision_reason='qa_' + decision.reason,
+                    reply_strategy='keyword' if decision.reason == 'keyword' else 'ai',
+                    matched_keyword=rule.get('topic'), reply_text=text, send_status='unknown')
+                try:
+                    await send_parts(self, db_manager, owner, chat_id, send_user_id, text, images, fixed_send_allowed)
+                    self._update_reply_decision_log(log_id, decision_reason='qa_sent', send_status='success')
+                except Exception as error:
+                    self._update_reply_decision_log(log_id, process_status='failed', decision_reason='qa_not_confirmed',
+                                                    error_message=str(error), send_status='unknown')
+                return  # Failure/ambiguity is terminal: never continue to API/default replies.
+
+            def fallback_send_allowed():
+                return (not pause_manager.is_chat_paused(chat_id, self.cookie_id)
+                        and AUTO_REPLY.get('enabled', True)
+                        and not db_manager.matches_message_filter(self.cookie_id, send_message, 'skip_reply')
+                        and fixed.revalidate(decision, self.cookie_id, item_id)
+                        and (not decision.semantic or db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled')))
+
             reply = None
             reply_strategy = "none"
             matched_keyword = None
@@ -9594,6 +9639,8 @@ class XianyuLive:
                 else:
                     # 2. 关键词匹配失败，如果AI开关打开，尝试AI回复
                     reply = await self.get_ai_reply(send_user_name, send_user_id, send_message, item_id, chat_id)
+                    if not reply and db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled'):
+                        reply = CLARIFY_REPLY  # Rejection/timeout is not permission to send a fallback promise.
                     if reply:
                         reply_source = 'AI'  # 标记为AI回复
                         reply_strategy = "ai"
@@ -9673,6 +9720,8 @@ class XianyuLive:
                                     
                                     # 发送图片
                                     if final_image_url:
+                                        if not fallback_send_allowed():
+                                            return
                                         log_id = self._add_reply_decision_log(
                                             message_data,
                                             **log_context,
@@ -9730,6 +9779,12 @@ class XianyuLive:
 
             # 如果有回复内容，发送消息
             if reply:
+                if not fallback_send_allowed():
+                    return
+                if reply_strategy == 'ai' and not db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled'):
+                    return
+                if reply_strategy == 'ai' and '__IMAGE_SEND__' in reply:
+                    reply = CLARIFY_REPLY
                 if not log_id:
                     log_id = self._add_reply_decision_log(
                         message_data,

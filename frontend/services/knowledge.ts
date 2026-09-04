@@ -9,6 +9,9 @@ export interface KnowledgeDraft {
   keywords: string;
   content: string;
   enabled: boolean;
+  entry_type?: 'knowledge' | 'qa';
+  match_mode?: 'exact' | 'contains' | 'hybrid';
+  image_ids?: string[];
 }
 export interface KnowledgeEntry extends KnowledgeDraft {
   id: number;
@@ -24,3 +27,7 @@ export const listKnowledge = () => get<{ entries: KnowledgeEntry[] }>('/ai-knowl
 export const saveKnowledge = (entry: KnowledgeDraft) => post<{ entry: KnowledgeEntry }>('/ai-knowledge', entry);
 export const previewKnowledge = (cookie_id: string, item_id: string, message: string) =>
   post<{ entries: KnowledgeEntry[]; model_called: false }>('/ai-knowledge/preview', { cookie_id, item_id, message });
+
+export const uploadReplyImage = (file: File) => post<{ id: string; width: number; height: number }>('/ai-knowledge/images', file,
+  { headers: { 'Content-Type': 'application/octet-stream' } });
+export const getReplyImage = (id: string) => get<Blob>(`/ai-knowledge/images/${id}`, undefined, { responseType: 'blob' });

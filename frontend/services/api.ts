@@ -254,28 +254,31 @@ export const getQuickPhrases = async (includeDisabled = false): Promise<QuickPhr
 };
 
 export const createQuickPhrase = async (
-  title: string, content: string, category = '默认', sortOrder = 0
+  title: string, content: string, category = '默认', sortOrder = 0, imageIds: string[] = []
 ): Promise<any> => {
   const formData = new FormData();
   formData.append('title', title);
   formData.append('content', content);
   formData.append('category', category);
   formData.append('sort_order', String(sortOrder));
+  formData.append('image_ids', JSON.stringify(imageIds));
 
   const response = await fetch('/quick-phrases', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
     body: formData
   });
-  return response.json();
+  const result = await response.json();
+  if (!response.ok || result.success === false) throw new Error(result.detail || result.message || '保存失败');
+  return result;
 };
 
 export const updateQuickPhrase = async (
-  id: number, fields: Partial<Pick<QuickPhrase, 'title' | 'content' | 'category' | 'sort_order' | 'enabled'>>
+  id: number, fields: Partial<Pick<QuickPhrase, 'title' | 'content' | 'category' | 'sort_order' | 'enabled' | 'image_ids'>>
 ): Promise<any> => {
   const formData = new FormData();
   Object.entries(fields).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) formData.append(key, String(value));
+    if (value !== undefined && value !== null) formData.append(key, key === 'image_ids' ? JSON.stringify(value) : String(value));
   });
 
   const response = await fetch(`/quick-phrases/${id}`, {
@@ -283,7 +286,9 @@ export const updateQuickPhrase = async (
     headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
     body: formData
   });
-  return response.json();
+  const result = await response.json();
+  if (!response.ok || result.success === false) throw new Error(result.detail || result.message || '保存失败');
+  return result;
 };
 
 export const deleteQuickPhrase = async (id: number): Promise<any> => {
@@ -1051,7 +1056,7 @@ export const getChatMessages = async (
 
 export const sendChatMessage = async (
   cookieId: string,
-  data: { cid: string; to_user_id: string; text: string }
+  data: { cid: string; to_user_id: string; text: string; image_ids?: string[] }
 ): Promise<{ success: boolean; message: string; data?: { messageId?: string } }> => {
   return post(`/chat/send/${encodeURIComponent(cookieId)}`, data);
 };

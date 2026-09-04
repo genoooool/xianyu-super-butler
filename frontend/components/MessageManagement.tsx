@@ -43,6 +43,7 @@ import {
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
 import { EmptyState, SectionHeader } from './ui';
+import { ReplyImagePicker } from './ReplyMedia';
 
 type View = 'messages' | 'filters';
 type MobilePane = 'list' | 'chat';
@@ -177,6 +178,15 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [draft, setDraft] = useState('');
+  const [draftImages, setDraftImages] = useState<string[]>([]);
+  const [imageUploading, setImageUploading] = useState(false);
+  const [showImagePicker, setShowImagePicker] = useState(false);
+  const destinationRef = useRef('');
+  const destination = `${activeAccountId}:${activeCid}`;
+  destinationRef.current = destination;
+  useEffect(() => {
+    setDraft(''); setDraftImages([]); setShowImagePicker(false); setImageUploading(false);
+  }, [destination]);
   // 快捷短语：人工客服常用话术
   const [quickPhrases, setQuickPhrases] = useState<QuickPhrase[]>([]);
   const [showPhrases, setShowPhrases] = useState(false);
@@ -430,26 +440,36 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
 
   // 插入短语到输入框而不是直接发送，方便先改再发
   const insertPhrase = (phrase: QuickPhrase) => {
+    if (sending || imageUploading) return;
+    const images = [...new Set([...draftImages, ...(phrase.image_ids || [])])];
+    if (images.length > 4) { notify('每次最多发送4张图片，请先移除部分图片', 'warning'); return; }
     setDraft(current => (current ? `${current}${phrase.content}` : phrase.content));
+    setDraftImages(images);
+    if (images.length) setShowImagePicker(true);
     setShowPhrases(false);
     void useQuickPhrase(phrase.id).catch(() => undefined);
   };
 
   const sendMessage = async () => {
-    const text = draft.trim();
-    if (!text || !activeConversation || !activeAccountId || sending) return;
+    const text = draft;
+    if ((!text.trim() && !draftImages.length) || !activeConversation || !activeAccountId || sending || imageUploading) return;
+    const sendingTo = destination;
     setSending(true);
     try {
-      await sendChatMessage(activeAccountId, {
+      const result = await sendChatMessage(activeAccountId, {
         cid: activeConversation.cid,
         to_user_id: activeConversation.otherUserId,
         text,
+        image_ids: draftImages,
       });
-      setDraft('');
-      await Promise.all([loadMessages(true), loadConversations(true)]);
+      if (!result.success) throw new Error(result.message || '未确认发送结果');
+      if (destinationRef.current === sendingTo) {
+        setDraft(''); setDraftImages([]);
+        await Promise.all([loadMessages(true), loadConversations(true)]);
+      }
       notify('消息已发送', 'success');
     } catch (error) {
-      notify(`发送失败：${(error as Error).message}`, 'error');
+      notify(`发送未确认：${(error as Error).message}。请先检查原会话，避免重复发送。`, 'error');
     } finally {
       setSending(false);
     }
@@ -781,7 +801,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                 <button type="button" title="表情（暂未开放）" className="hover:text-[var(--text)]">
                   <Smile className="h-5 w-5" />
                 </button>
-                <button type="button" title="图片（暂未开放）" className="hover:text-[var(--text)]">
+                <button type="button" title="添加图片" onClick={() => setShowImagePicker(value => !value)} disabled={sending || imageUploading} className="hover:text-[var(--text)]">
                   <Image className="h-5 w-5" />
                 </button>
                 <div className="relative">
@@ -811,7 +831,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                               [{phrase.category}] {phrase.title}
                             </span>
                             <span className="mt-0.5 block truncate text-xs text-gray-500">
-                              {phrase.content}
+                              {phrase.content}{phrase.image_ids?.length ? ` [${phrase.image_ids.length}张图片]` : ''}
                             </span>
                           </button>
                         ))
@@ -820,6 +840,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   )}
                 </div>
               </div>
+              {showImagePicker && <div className="mb-3"><ReplyImagePicker key={destination} ids={draftImages} onChange={setDraftImages} disabled={sending} onBusy={setImageUploading} /></div>}
               <div className="flex items-end gap-2 sm:gap-3">
                 <textarea
                   value={draft}
@@ -832,13 +853,13 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   }}
                   rows={2}
                   placeholder={activeAccount?.connected ? '输入消息' : '账号离线，暂时无法发送'}
-                  disabled={!activeAccount?.connected}
+                  disabled={!activeAccount?.connected || sending}
                   className="min-h-[56px] min-w-0 flex-1 resize-none border-0 bg-[var(--surface)] px-0 py-1 text-sm leading-6 text-[var(--text)] outline-none placeholder:text-[var(--text-soft)] disabled:bg-[var(--surface)] sm:min-h-[72px]"
                 />
                 <button
                   type="button"
                   onClick={() => void sendMessage()}
-                  disabled={!draft.trim() || sending || !activeAccount?.connected}
+                  disabled={(!draft.trim() && !draftImages.length) || sending || imageUploading || !activeAccount?.connected}
                   className="flex h-9 shrink-0 items-center gap-2 rounded-md bg-[var(--brand)] px-4 text-sm font-bold text-[var(--brand-ink)] hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:bg-[var(--surface-strong)] disabled:text-[var(--text-soft)] sm:px-5"
                 >
                   {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}

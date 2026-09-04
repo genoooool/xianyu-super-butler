@@ -414,6 +414,8 @@ class AIReplyEngine:
         normalized = normalized.strip('"\'`')
         if not normalized:
             return None
+        if "__IMAGE_SEND__" in normalized:
+            return None  # Model text can never become an attachment command.
 
         hit = next((m for m in self._REASONING_MARKERS if m in normalized), None)
         if hit:
@@ -704,7 +706,8 @@ class AIReplyEngine:
 - 最大优惠金额：{max_discount_amount}元
 
 安全边界：
-- 只能依据上述商品事实回答，不得编造库存、规格、物流或售后承诺。
+- 优先依据已检索的卖家知识资料，上述商品信息仅供补充；冲突时不得用标题、展示价或历史回复覆盖卖家资料。
+- 不得编造库存、规格、物流或售后承诺。没有明确SKU价格与数量对应关系时，引导买家点击商品购买页面查看对应报价，不自行换算。
 - 付款、发货、退款、收货和订单完成由系统订单状态与自动发货规则处理。
 - 未经系统确认，不得声称上述操作已成功，也不得要求买家重复付款。
 - 直接输出适合发送给买家的简短回复，不要解释规则。"""
@@ -712,6 +715,10 @@ class AIReplyEngine:
                 knowledge = KnowledgeService(db_manager).for_reply(cookie_id, item_id, message)
                 if knowledge:
                     logger.info("AI知识引用: 账号={}, 资料编号={}", cookie_id, [entry["id"] for entry in knowledge])
+                else:
+                    # With no fixed QA and no knowledge, do not invent an answer from a listing price.
+                    from app.services.fixed_replies import CLARIFY_REPLY
+                    return CLARIFY_REPLY
                 from app.services.ai_context_budget import build_bounded_messages
                 messages = build_bounded_messages(
                     system_prompt, safety_prompt, knowledge, [

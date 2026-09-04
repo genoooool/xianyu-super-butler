@@ -36,6 +36,27 @@ class ImageUploader:
         if self.session:
             await self.session.close()
             self.session = None
+
+    async def upload_reply_bytes(self, image_data: bytes) -> str:
+        """Upload an already validated PNG without temporary files or logging payloads."""
+        from urllib.parse import urlparse
+        if not self.session:
+            await self.create_session()
+        data = aiohttp.FormData()
+        data.add_field('file', image_data, filename='reply.png', content_type='image/png')
+        headers = {'cookie': self.cookies_str, 'Referer': 'https://www.goofish.com/',
+                   'Origin': 'https://www.goofish.com', 'x-requested-with': 'XMLHttpRequest'}
+        async with self.session.post(self.upload_url, data=data, headers=headers, allow_redirects=False) as response:
+            if response.status != 200:
+                raise RuntimeError('图片上传未成功')
+            payload = await response.text()
+        url = self._parse_upload_response(payload)
+        parsed = urlparse(url or '')
+        if parsed.scheme not in {'https', 'http'} or not any(
+            parsed.hostname == domain or (parsed.hostname or '').endswith('.' + domain)
+            for domain in ('alicdn.com', 'goofish.com', 'taobaocdn.com')):
+            raise RuntimeError('图片上传未返回有效平台地址')
+        return url
     
     def _compress_image(self, image_path: str, max_size: int = 5 * 1024 * 1024, quality: int = 85) -> Optional[str]:
         """压缩图片"""

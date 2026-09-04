@@ -26,7 +26,9 @@ class AIReplyEngineTests(unittest.TestCase):
             patch.object(self.engine, 'get_bargain_count', return_value=0),
             patch.object(self.engine, '_generate_with_retry') as model,
             patch('app.ai_reply_engine.db_manager.get_ai_reply_settings', return_value=settings),
-            patch('app.ai_reply_engine.KnowledgeService.for_reply', return_value=[]),
+            patch('app.ai_reply_engine.KnowledgeService.for_reply', return_value=[{
+                'id': 1, 'source': '店铺资料', 'topic': '使用方法', 'content': '按说明激活。'
+            }]),
         ):
             result = self.engine.generate_reply('怎么使用', {'title': '测试', 'price': 100},
                                                 'chat', 'account', 'buyer', 'item', True)
@@ -138,6 +140,9 @@ class AIReplyEngineTests(unittest.TestCase):
             patch.object(self.engine, "_create_openai_client", return_value=Mock()),
             patch.object(self.engine, "_call_openai_api", return_value="按说明激活即可。") as call_openai,
             patch("app.ai_reply_engine.db_manager.get_ai_reply_settings", return_value=settings),
+            patch('app.ai_reply_engine.KnowledgeService.for_reply', return_value=[{
+                'id': 1, 'source': '店铺资料', 'topic': '使用方法', 'content': '按说明激活。'
+            }]),
         ):
             self.engine.generate_reply(
                 "怎么使用？", {"title": "周卡", "price": 80, "desc": "独享"},

@@ -6,6 +6,7 @@ import { KnowledgeDraft, KnowledgeEntry, KnowledgeScope, listKnowledge, previewK
 import { notify } from '../services/feedback';
 import { SectionHeader } from './ui';
 import KnowledgeImport from './KnowledgeImport';
+import { EnabledBadge } from './ReplyMedia';
 
 const names: Record<KnowledgeScope, string> = { shared: '共用资料', account: '当前店铺', item: '商品专属' };
 const emptyDraft = { topic: '', keywords: '', content: '', enabled: true };
@@ -36,7 +37,7 @@ const AIKnowledge: React.FC<{ accountId: string }> = ({ accountId }) => {
     return () => { active = false; };
   }, [accountId]);
 
-  const visible = useMemo(() => entries.filter(entry => entry.scope === scope &&
+  const visible = useMemo(() => entries.filter(entry => entry.entry_type !== 'qa' && entry.scope === scope &&
     (scope === 'shared' || entry.cookie_id === accountId) && (scope !== 'item' || entry.item_id === itemId)),
   [entries, scope, accountId, itemId]);
 
@@ -100,7 +101,7 @@ const AIKnowledge: React.FC<{ accountId: string }> = ({ accountId }) => {
           <div className="space-y-2" aria-label="知识条目">
             {visible.length === 0 && <p className="text-sm text-gray-500">这个范围暂无资料。可在下方添加，或从较通用范围建立同主题规则。</p>}
             {visible.map(entry => <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-gray-200 p-3">
-              <div className="min-w-0 flex-1"><p className="break-words font-semibold">{entry.topic} <span className="text-xs font-normal text-gray-500">{entry.enabled ? '已启用' : '已停用'}</span></p>
+              <div className="min-w-0 flex-1"><p className="break-words font-semibold">{entry.topic} <EnabledBadge enabled={entry.enabled} /></p>
                 <p className="mt-1 line-clamp-2 break-words text-sm text-gray-500">{entry.content}</p>
               </div>
               <button type="button" disabled={busy} className="ios-btn-secondary px-3 py-1.5 text-sm" onClick={() => {

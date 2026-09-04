@@ -740,6 +740,8 @@ class DBManager:
 
             from app.services.ai_knowledge import initialize_schema as initialize_knowledge_schema
             initialize_knowledge_schema(cursor)
+            from app.services.quick_phrases import initialize_schema as initialize_quick_phrases
+            initialize_quick_phrases(cursor)
 
             self.conn.commit()
             logger.info("数据库初始化完成")
@@ -3356,6 +3358,10 @@ class DBManager:
                     'rows': [list(row) for row in cursor.fetchall()]
                 }
                 logger.info(f"导出备份成功，用户ID: {user_id}")
+                from app.services.reply_assets import ReplyAssets
+                from app.services.quick_phrases import QuickPhrases
+                backup_data['data']['reply_assets'] = ReplyAssets(self).export_backup(user_id)
+                backup_data['data']['chat_quick_phrases'] = QuickPhrases(self).export_backup(user_id)
                 return backup_data
 
             except Exception as e:
@@ -3444,9 +3450,13 @@ class DBManager:
 
                 # Restore after accounts/items, rebind owner and validate each target.
                 # Merge by scoped topic; old backups never erase newer knowledge.
+                from app.services.reply_assets import ReplyAssets
+                from app.services.quick_phrases import QuickPhrases
+                asset_map = ReplyAssets(self).restore_backup(data.get('reply_assets', []), user_id)
                 if 'ai_knowledge_entries' in data:
                     from app.services.ai_knowledge import KnowledgeService
-                    KnowledgeService(self).restore_backup(data['ai_knowledge_entries'], user_id)
+                    KnowledgeService(self).restore_backup(data['ai_knowledge_entries'], user_id, asset_map)
+                QuickPhrases(self).restore_backup(data.get('chat_quick_phrases', []), user_id, asset_map)
 
                 # 提交事务
                 self.conn.commit()

@@ -17,6 +17,7 @@ const ProductAutomation = lazy(() => import('./components/ProductAutomation'));
 const AIReply = lazy(() => import('./components/AIReply'));
 const Settings = lazy(() => import('./components/Settings'));
 const Keywords = lazy(() => import('./components/Keywords'));
+const AutoReplies = lazy(() => import('./components/AutoReplies'));
 const MessageManagement = lazy(() => import('./components/MessageManagement'));
 const NotificationsAndLogs = lazy(() => import('./components/NotificationsAndLogs'));
 const About = lazy(() => import('./components/About'));
@@ -570,7 +571,7 @@ const App: React.FC = () => {
             {visitedTabs.has('cards') && <Suspense fallback={<PageLoader />}><CardList /></Suspense>}
           </section>
           <section hidden={activeTab !== 'auto-reply'}>
-            {visitedTabs.has('auto-reply') && <Suspense fallback={<PageLoader />}><Keywords mode="reply" /></Suspense>}
+            {visitedTabs.has('auto-reply') && <Suspense fallback={<PageLoader />}><AutoReplies /></Suspense>}
           </section>
           <section hidden={activeTab !== 'ai-reply'}>
             {visitedTabs.has('ai-reply') && <Suspense fallback={<PageLoader />}><AIReply /></Suspense>}

@@ -1192,7 +1192,8 @@ class SendMessageResponse(BaseModel):
 class ChatSendMessageRequest(BaseModel):
     cid: str = Field(..., min_length=1, max_length=200)
     to_user_id: str = Field(..., min_length=1, max_length=100)
-    text: str = Field(..., min_length=1, max_length=2000)
+    text: str = Field(default='', max_length=2000)
+    image_ids: List[str] = Field(default_factory=list, max_length=4)
 
 
 def verify_api_key(api_key: str) -> bool:
@@ -1482,6 +1483,21 @@ async def send_chat_message(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     _get_owned_chat_account(cookie_id, current_user)
+    if request.image_ids:
+        from app.services.reply_assets import ReplyAssets
+        from app.services.reply_delivery import send_parts, ReplyDeliveryError
+        try:
+            ReplyAssets(db_manager).validate(current_user['user_id'], request.image_ids)
+        except (ValueError, PermissionError) as error:
+            raise HTTPException(400, str(error)) from error
+        try:
+            count = await _run_on_account_loop(cookie_id, lambda instance: send_parts(
+                instance, db_manager, current_user['user_id'], request.cid.strip(), request.to_user_id.strip(), request.text, request.image_ids))
+        except ReplyDeliveryError as error:
+            raise HTTPException(409, str(error)) from error
+        return {'success': True, 'message': '已收到发送回执', 'data': {'parts': count}}
+    if not request.text.strip():
+        raise HTTPException(400, '消息不能为空')
     response = await _run_on_account_loop(
         cookie_id,
         lambda instance: instance.send_im_text(
@@ -8860,25 +8876,26 @@ def list_quick_phrases(
 ):
     """获取快捷短语列表，供人工客服快速插入常用话术。"""
     from app.db_manager import db_manager
-    return {'success': True, 'data': db_manager.get_quick_phrases(include_disabled)}
+    from app.services.quick_phrases import QuickPhrases
+    return {'success': True, 'data': QuickPhrases(db_manager).list(current_user['user_id'], include_disabled)}
 
 
 @app.post('/quick-phrases')
 def create_quick_phrase(
     title: str = Form(...),
-    content: str = Form(...),
+    content: str = Form(''),
+    image_ids: str = Form('[]'),
     category: str = Form('默认'),
     sort_order: int = Form(0),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     from app.db_manager import db_manager
 
-    if not title.strip() or not content.strip():
-        raise HTTPException(status_code=400, detail="标题和内容不能为空")
-
-    phrase_id = db_manager.create_quick_phrase(
-        title.strip(), content.strip(), category.strip() or '默认', sort_order
-    )
+    from app.services.quick_phrases import QuickPhrases
+    try:
+        phrase_id = QuickPhrases(db_manager).save(current_user['user_id'], dict(title=title, content=content, category=category, sort_order=sort_order, image_ids=image_ids))
+    except (ValueError, PermissionError) as error:
+        raise HTTPException(400, str(error)) from error
     if not phrase_id:
         raise HTTPException(status_code=500, detail="新增快捷短语失败")
     log_with_user('info', f"新增快捷短语: {title}", current_user)
@@ -8893,14 +8910,17 @@ def update_quick_phrase(
     category: Optional[str] = Form(None),
     sort_order: Optional[int] = Form(None),
     enabled: Optional[bool] = Form(None),
+    image_ids: Optional[str] = Form(None),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     from app.db_manager import db_manager
 
-    ok = db_manager.update_quick_phrase(
-        phrase_id, title=title, content=content, category=category,
-        sort_order=sort_order, enabled=enabled,
-    )
+    from app.services.quick_phrases import QuickPhrases
+    try:
+        ok = QuickPhrases(db_manager).save(current_user['user_id'], dict(title=title, content=content, category=category,
+            sort_order=sort_order, enabled=enabled, image_ids=image_ids), phrase_id)
+    except (ValueError, PermissionError) as error:
+        raise HTTPException(400, str(error)) from error
     if not ok:
         raise HTTPException(status_code=404, detail="快捷短语不存在或无字段更新")
     return {'success': True}
@@ -8913,8 +8933,11 @@ def delete_quick_phrase(
 ):
     from app.db_manager import db_manager
 
-    if not db_manager.delete_quick_phrase(phrase_id):
-        raise HTTPException(status_code=404, detail="快捷短语不存在")
+    from app.services.quick_phrases import QuickPhrases
+    try:
+        QuickPhrases(db_manager).delete(current_user['user_id'], phrase_id)
+    except PermissionError as error:
+        raise HTTPException(404, str(error)) from error
     log_with_user('info', f"删除快捷短语: {phrase_id}", current_user)
     return {'success': True}
 
@@ -8926,7 +8949,8 @@ def use_quick_phrase(
 ):
     """记录一次使用，用于统计高频短语。"""
     from app.db_manager import db_manager
-    return {'success': db_manager.increment_quick_phrase_usage(phrase_id)}
+    from app.services.quick_phrases import QuickPhrases
+    return {'success': QuickPhrases(db_manager).use(current_user['user_id'], phrase_id)}
 
 
 @app.post('/api/captcha/manual-session')

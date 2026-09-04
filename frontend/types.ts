@@ -98,6 +98,7 @@ export interface QuickPhrase {
   category: string;
   title: string;
   content: string;
+  image_ids?: string[];
   sort_order: number;
   enabled: boolean;
   use_count: number;

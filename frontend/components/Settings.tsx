@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import DesktopNotificationSettings from './DesktopNotificationSettings';
+import { EnabledBadge, ReplyImage, ReplyImagePicker } from './ReplyMedia';
 import {
   Database,
   Eye,
@@ -98,7 +99,9 @@ const Settings: React.FC = () => {
   const [activeSection, setActiveSection] = useState<SettingsSection>('general');
   // 快捷短语：人工客服常用话术
   const [phrases, setPhrases] = useState<QuickPhrase[]>([]);
-  const [phraseForm, setPhraseForm] = useState({ category: '默认', title: '', content: '' });
+  const [phraseForm, setPhraseForm] = useState({ category: '默认', title: '', content: '', image_ids: [] as string[] });
+  const [phraseBusy, setPhraseBusy] = useState(false);
+  const [phraseUploading, setPhraseUploading] = useState(false);
 
   const loadPhrases = () => {
     getQuickPhrases(true).then(setPhrases).catch(() => setPhrases([]));
@@ -107,10 +110,15 @@ const Settings: React.FC = () => {
   useEffect(() => { loadPhrases(); }, []);
 
   const handleAddPhrase = async () => {
-    if (!phraseForm.title.trim() || !phraseForm.content.trim()) return;
-    await createQuickPhrase(phraseForm.title.trim(), phraseForm.content.trim(), phraseForm.category.trim() || '默认');
-    setPhraseForm({ category: phraseForm.category, title: '', content: '' });
-    loadPhrases();
+    if (phraseBusy || phraseUploading || !phraseForm.title.trim() || (!phraseForm.content.trim() && !phraseForm.image_ids.length)) return;
+    setPhraseBusy(true);
+    try {
+      await createQuickPhrase(phraseForm.title.trim(), phraseForm.content, phraseForm.category.trim() || '默认', 0, phraseForm.image_ids);
+      setPhraseForm({ category: phraseForm.category, title: '', content: '', image_ids: [] });
+      loadPhrases();
+      notify('快捷短语已保存', 'success');
+    } catch (error) { notify((error as Error).message, 'error'); }
+    finally { setPhraseBusy(false); }
   };
 
   const handleTogglePhrase = async (phrase: QuickPhrase) => {
@@ -531,7 +539,7 @@ const Settings: React.FC = () => {
         <section className="section-panel">
           <SectionHeader
             title="快捷短语"
-            description="人工客服常用话术，在消息管理页可一键插入到输入框。"
+            description="文字、图片或图文组合，在消息管理页插入后确认发送。"
             icon={Zap}
           />
           <div className="grid gap-3 p-4 sm:grid-cols-[140px_200px_1fr_auto]">
@@ -556,12 +564,13 @@ const Settings: React.FC = () => {
             <button
               type="button"
               onClick={() => void handleAddPhrase()}
-              disabled={!phraseForm.title.trim() || !phraseForm.content.trim()}
+              disabled={phraseBusy || phraseUploading || !phraseForm.title.trim() || (!phraseForm.content.trim() && !phraseForm.image_ids.length)}
               className="ios-btn-primary rounded-md px-4 py-2.5 text-sm disabled:opacity-60"
             >
               添加
             </button>
           </div>
+          <div className="px-4 pb-4"><ReplyImagePicker ids={phraseForm.image_ids} onChange={image_ids => setPhraseForm(current => ({ ...current, image_ids }))} disabled={phraseBusy} onBusy={setPhraseUploading} /></div>
           <div className="divide-y divide-gray-100 border-t border-gray-100">
             {phrases.length === 0 ? (
               <p className="px-4 py-6 text-center text-sm text-gray-500">还没有快捷短语</p>
@@ -572,7 +581,9 @@ const Settings: React.FC = () => {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold text-gray-800">{phrase.title}</p>
                     <p className="truncate text-xs text-gray-500">{phrase.content}</p>
+                    <div className="mt-2 flex gap-2">{phrase.image_ids?.map(id => <ReplyImage key={id} id={id} />)}</div>
                   </div>
+                  <EnabledBadge enabled={phrase.enabled} />
                   <span className="shrink-0 text-xs text-gray-400">用了 {phrase.use_count} 次</span>
                   <button
                     type="button"
