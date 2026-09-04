@@ -9,6 +9,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  Search,
   Settings2,
   ShoppingBag,
   Sparkles,
@@ -188,8 +189,7 @@ const ItemList: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [polishing, setPolishing] = useState(false);
-  // 商品列表按账号过滤，多账号时避免混在一起看不清归属
-  const [listAccountFilter, setListAccountFilter] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   // 商品分页
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -251,8 +251,9 @@ const ItemList: React.FC = () => {
   const isOffShelf = (item: Item) => item.listing_status === 'off_shelf';
 
   const accountScopedItems = useMemo(
-    () => (listAccountFilter ? items.filter(item => item.cookie_id === listAccountFilter) : items),
-    [items, listAccountFilter],
+    // Use the same account as the toolbar and protection tab, including initial load.
+    () => (selectedAccount ? items.filter(item => item.cookie_id === selectedAccount) : items),
+    [items, selectedAccount],
   );
 
   const offShelfCount = useMemo(
@@ -260,10 +261,13 @@ const ItemList: React.FC = () => {
     [accountScopedItems],
   );
 
-  const visibleItems = useMemo(
-    () => (showOffShelf ? accountScopedItems : accountScopedItems.filter(item => !isOffShelf(item))),
-    [accountScopedItems, showOffShelf],
-  );
+  const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
+  const visibleItems = useMemo(() => accountScopedItems.filter(item =>
+    (showOffShelf || !isOffShelf(item)) && (!normalizedQuery ||
+      [item.item_title, item.item_id].some(value => String(value || '').toLocaleLowerCase().includes(normalizedQuery))),
+  ), [accountScopedItems, showOffShelf, normalizedQuery]);
+
+  useEffect(() => { setPage(1); }, [selectedAccount, normalizedQuery, showOffShelf, pageSize]);
 
   // 商品数据由后端一次性返回，这里做客户端分页：商品多时一屏几十行难以浏览
   const totalPages = Math.max(1, Math.ceil(visibleItems.length / pageSize));
@@ -277,17 +281,9 @@ const ItemList: React.FC = () => {
     if (page > totalPages) setPage(1);
   }, [totalPages, page]);
 
-  const configuredItemCount = useMemo(() => {
-    const configuredKeys = new Set(
-      deliveryConfigs.map(config => `${config.cookie_id}:${config.item_id}`),
-    );
-    shippingRules.forEach(rule => {
-      if (rule.cookie_id && rule.item_id) {
-        configuredKeys.add(`${rule.cookie_id}:${rule.item_id}`);
-      }
-    });
-    return configuredKeys.size;
-  }, [deliveryConfigs, shippingRules]);
+  const configuredItemCount = useMemo(() => visibleItems.filter(item =>
+    deliveryConfigMap.has(itemKey(item)) || ruleMap.has(itemKey(item)),
+  ).length, [visibleItems, deliveryConfigMap, ruleMap]);
 
   const loadData = async () => {
     setLoading(true);
@@ -710,7 +706,6 @@ const ItemList: React.FC = () => {
                 value={selectedAccount}
                 onChange={event => {
                   setSelectedAccount(event.target.value);
-                  setListAccountFilter(event.target.value);
                   setPage(1);
                 }}
                 aria-label="选择账号"
@@ -771,6 +766,20 @@ const ItemList: React.FC = () => {
                 {polishing ? '正在擦亮' : '一键擦亮'}
               </button>
             </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 border-b border-gray-200 px-4 py-3">
+            <div className="relative w-full sm:max-w-md">
+              <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-soft)]" />
+              <input type="search" aria-label="搜索商品名称或商品 ID" placeholder="搜索商品名称或商品 ID"
+                autoComplete="off" name="product-search" value={searchQuery} onChange={event => setSearchQuery(event.target.value)}
+                className="ios-input w-full rounded-md py-2 pl-9 pr-9 text-sm [&::-webkit-search-cancel-button]:appearance-none" />
+              {searchQuery && <button type="button" aria-label="清空商品搜索" onClick={() => setSearchQuery('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-[var(--text-soft)] hover:text-[var(--text)]">
+                <X aria-hidden="true" className="h-4 w-4" />
+              </button>}
+            </div>
+            <span role="status" className="text-xs text-[var(--text-muted)]">当前结果 {visibleItems.length} 件商品</span>
           </div>
 
           {visibleItems.length > 0 ? (
@@ -1021,12 +1030,14 @@ const ItemList: React.FC = () => {
             </>
           ) : (
             <EmptyState
-              title="暂无商品数据"
-              description="先选择闲鱼账号同步在售商品，也可以手动添加商品并直接配置自动发货。"
+              title={normalizedQuery ? '未找到匹配商品' : '当前范围暂无商品'}
+              description={normalizedQuery
+                ? '试试其他商品名称或商品 ID，或切换账号；已下架商品需要勾选显示。'
+                : '可切换账号或显示已下架商品，也可以同步或手动添加商品。'}
               icon={ShoppingBag}
               action={(
-                <button type="button" onClick={openManualModal} className="ios-btn-secondary rounded-md px-4 py-2 text-sm">
-                  手动添加商品
+                <button type="button" onClick={normalizedQuery ? () => setSearchQuery('') : openManualModal} className="ios-btn-secondary rounded-md px-4 py-2 text-sm">
+                  {normalizedQuery ? '清空搜索' : '手动添加商品'}
                 </button>
               )}
             />
