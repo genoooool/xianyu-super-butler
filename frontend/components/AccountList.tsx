@@ -668,7 +668,7 @@ const AccountList: React.FC = () => {
                 )}
                 <div className="flex flex-wrap gap-2">
                    {blockedState && <span className="status-badge bg-red-100 text-red-700">{blockedState.verification_type === 'slider' ? '滑块验证' : blockedState.verification_type === 'face' ? '人脸验证' : '平台风控'}{blockedState.blocked ? ` · ${Math.max(1, Math.ceil(blockedState.remaining_seconds / 60))} 分钟` : ''}</span>}
-                   {account.auto_confirm && <span className="status-badge status-badge-warning flex items-center gap-1.5"><MessageSquare className="w-3 h-3"/> 自动确认</span>}
+                   {account.auto_confirm && <span className="status-badge status-badge-warning flex items-center gap-1.5"><MessageSquare className="w-3 h-3"/> 自动确认发货</span>}
                    {account.pause_duration > 0 && <span className="status-badge status-badge-info flex items-center gap-1.5"><Clock className="w-3 h-3"/> 暂停 {account.pause_duration} 分钟</span>}
                 </div>
                 {/* 登录态过期给出明确动作，只挂一个徽标用户不知道该做什么 */}
@@ -917,14 +917,14 @@ const AccountList: React.FC = () => {
                 <p className="text-xs text-gray-500 mt-1">当前Cookie长度: {editForm.cookie.length} 字符</p>
               </div>
 
-              {/* 自动确认收货 */}
+              {/* 自动确认发货 */}
               <div className="flex items-center justify-between gap-4 rounded-md border border-gray-200 bg-gray-50 p-4">
                 <div>
                   <div className="font-bold text-gray-900 flex items-center gap-2">
                     <Check className="w-4 h-4 text-green-500" />
-                    自动确认收货
+                    自动确认发货
                   </div>
-                  <div className="text-xs text-gray-500">自动点击确认收货按钮</div>
+                  <div className="text-xs text-gray-500">自动发货流程发送全部卡券后，在闲鱼确认发货；不替买家确认收货</div>
                 </div>
                 <button
                   type="button"

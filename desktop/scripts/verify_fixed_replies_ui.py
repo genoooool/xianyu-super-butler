@@ -53,7 +53,9 @@ def main():
     add_get('/system-settings/public',dict(registration_enabled='false'))
     add_get('/desktop/notifications/status',dict(available=False,active=False))
     add_get('/desktop/credentials',dict(available=False,saved=False))
-    add_get('/cookies/details',[dict(id='a',nickname='测试店铺 A',enabled=False),dict(id='b',nickname='测试店铺 B',enabled=False)])
+    add_get('/cookies/details',[dict(id='a',nickname='测试店铺 A',enabled=False,auto_confirm=True),dict(id='b',nickname='测试店铺 B',enabled=False)])
+    add_get('/ai-reply-settings',{})
+    add_get('/api/risk-control/status',dict(success=True,accounts=[]))
     add_get('/items',dict(items=[dict(cookie_id='a',item_id='one',item_title='测试商品：星星套餐'),
         dict(cookie_id='a',item_id='two',item_title='测试商品：月亮套餐'),
         dict(cookie_id='a',item_id='three',item_title='测试商品：太阳套餐'),
@@ -77,10 +79,10 @@ def main():
         form=dict(await request.form()); return dict(success=True,id=phrases.save(1,form))
     @app.post('/quick-phrases/{phrase_id}/use')
     def use_phrase(phrase_id: int): return dict(success=phrases.use(1,phrase_id))
-    sends=[]
+    sends=[]; send_success=True
     @app.post('/chat/send/{cookie_id}')
     async def record_send(request: Request):
-        sends.append(await request.json()); return dict(success=True,message='仅记录离线请求')
+        sends.append(await request.json()); return dict(success=send_success,message='仅记录离线请求' if send_success else '离线模拟未确认')
     app.mount('/static',StaticFiles(directory=args.static_dir))
     app.mount('/',StaticFiles(directory=args.static_dir,html=True))
     sock=socket.socket(); sock.bind(('127.0.0.1',0)); base=f'http://127.0.0.1:{sock.getsockname()[1]}'
@@ -212,7 +214,25 @@ def main():
             page.screenshot(path=str(args.output_dir/'message-image-draft.png'))
             page.get_by_role('button',name='发送',exact=True).click()
             expect(page.locator('img[alt="回复图片"]:visible')).to_have_count(0)
+            composer=page.locator('footer:visible')
+            expect(composer.get_by_label('添加回复图片')).to_have_count(0)
             assert len(sends)==1 and sends[0]['text']=='' and len(sends[0]['image_ids'])==1
+            page.screenshot(path=str(args.output_dir/'message-after-send.png'))
+
+            # The toolbar must reopen the picker; an unconfirmed send must retain the draft.
+            composer.get_by_title('添加图片',exact=True).click()
+            expect(composer.get_by_label('添加回复图片')).to_have_count(1)
+            composer.get_by_label('添加回复图片').set_input_files(upload)
+            expect(composer.get_by_alt_text('回复图片')).to_be_visible()
+            composer.get_by_placeholder('输入消息',exact=True).fill('保留这份图片草稿')
+            send_success=False
+            composer.get_by_role('button',name='发送',exact=True).click()
+            expect(page.get_by_text('发送未确认：离线模拟未确认。请先检查原会话，避免重复发送。',exact=True)).to_be_visible()
+            expect(composer.get_by_placeholder('输入消息',exact=True)).to_have_value('保留这份图片草稿')
+            expect(composer.get_by_alt_text('回复图片')).to_be_visible()
+            expect(composer.get_by_label('添加回复图片')).to_have_count(1)
+            assert len(sends)==2 and len(sends[1]['image_ids'])==1
+            page.screenshot(path=str(args.output_dir/'message-unconfirmed-draft.png'))
 
             # Local takeover state must remain visible independently of unread counts/platform paging.
             first=handoffs.begin(1,'a','chat',0,1,'unclear','buyer','离线测试买家','one')
@@ -251,7 +271,14 @@ def main():
             page.get_by_label('消息账号').select_option('b')
             expect(page.get_by_text('另一店买家',exact=True).first).to_be_visible()
             expect(page.get_by_text('列表外买家',exact=True)).to_have_count(0)
-            assert len(sends)==1, 'Resume must never send or replay a buyer message'
+            assert len(sends)==2, 'Resume and unconfirmed sends must never automatically replay a buyer message'
+            page.get_by_role('button',name='账号管理',exact=True).click()
+            account=page.locator('article').filter(has_text='测试店铺 A')
+            expect(account.get_by_text('自动确认发货',exact=True)).to_be_visible()
+            account.get_by_title('编辑账号',exact=True).click()
+            expect(page.get_by_text('自动发货流程发送全部卡券后，在闲鱼确认发货；不替买家确认收货',exact=True)).to_be_visible()
+            expect(page.get_by_text('自动确认收货',exact=True)).to_have_count(0)
+            page.screenshot(path=str(args.output_dir/'account-auto-confirm-label.png'))
             assert not errors, errors
             assert not failed, failed
             print(json.dumps(dict(status='passed',qa_entries=len(KnowledgeService(db).list_entries(1)),phrases=len(phrases.list(1)),offline_send_requests=len(sends),console_errors=errors,http_errors=failed),ensure_ascii=False))

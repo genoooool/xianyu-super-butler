@@ -524,7 +524,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
       });
       if (!result.success) throw new Error(result.message || '未确认发送结果');
       if (destinationRef.current === sendingTo) {
-        setDraft(''); setDraftImages([]);
+        setDraft(''); setDraftImages([]); setShowImagePicker(false);
         await Promise.all([loadMessages(true), loadConversations(true)]);
       }
       notify('消息已发送', 'success');
