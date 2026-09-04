@@ -7,7 +7,7 @@ from functools import lru_cache
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from app.services.desktop_credentials import KeychainError, MacKeychain
+from app.services.desktop_credentials import KeychainError, create_system_credential_store
 
 
 class SavedLogin(BaseModel):
@@ -17,11 +17,11 @@ class SavedLogin(BaseModel):
 
 def create_desktop_credentials_router(token, cookie_name, get_current_user, db, *, store_factory=None):
     router = APIRouter(prefix="/desktop/credentials")
-    available = bool(token) and sys.platform == "darwin" and os.getenv("XIANYU_DESKTOP_SMOKE") != "1"
+    available = bool(token) and sys.platform in {"darwin", "win32"} and os.getenv("XIANYU_DESKTOP_SMOKE") != "1"
 
     @lru_cache(maxsize=1)
     def store():
-        return (store_factory or MacKeychain)()
+        return store_factory() if store_factory else create_system_credential_store()
 
     def desktop(request: Request, response: Response):
         response.headers["Cache-Control"] = "no-store"
@@ -33,13 +33,13 @@ def create_desktop_credentials_router(token, cookie_name, get_current_user, db, 
 
     def operate(action):
         if not available:
-            raise HTTPException(409, "当前环境不支持系统钥匙串保存")
+            raise HTTPException(409, "当前环境不支持系统安全凭据保存")
         try:
             return action(store())
         except KeychainError as error:
             raise HTTPException(503, str(error), headers={"Cache-Control": "no-store"}) from error
         except Exception as error:
-            raise HTTPException(503, "系统钥匙串不可用，登录信息未完成保存", headers={"Cache-Control": "no-store"}) from error
+            raise HTTPException(503, "系统安全凭据不可用，登录信息未完成保存", headers={"Cache-Control": "no-store"}) from error
 
     @router.get("")
     def read(request: Request, response: Response):

@@ -7,6 +7,14 @@ from playwright.sync_api import expect
 def verify_navigation_ui(page, context, base, native, output_dir):
     accounts = [dict(accountId='shop-a', displayName='验收店铺甲', connected=True),
                 dict(accountId='shop-b', displayName='验收店铺乙', connected=True)]
+    phrases = {'updated': False, 'reads': 0}
+    def quick_phrases(route):
+        phrases['reads'] += 1
+        data = [] if not phrases['updated'] else [dict(
+            id=1, title='刚新增的快捷短语', content='切回消息页即可使用', category='验收',
+            sort_order=0, enabled=True, use_count=0, image_ids=[])]
+        route.fulfill(json={'success': True, 'data': data})
+    page.route('**/quick-phrases?*', quick_phrases)
     page.route('**/chat/accounts', lambda r: r.fulfill(json={'success': True, 'data': accounts}))
     page.route('**/cookies/details', lambda r: r.fulfill(json=[{'id': a['accountId'], 'remark': a['displayName'], 'enabled': True} for a in accounts]))
 
@@ -31,6 +39,7 @@ def verify_navigation_ui(page, context, base, native, output_dir):
     assert context.request.post(base + '/desktop/notifications/activate', headers=native, data={'target': ''}).json()['queued']
     expect(page.get_by_role('combobox', name='消息账号')).to_have_value('__all__', timeout=20000)
     expect(page.get_by_text('历史验证-shop-a-first', exact=True)).to_be_visible()
+    assert phrases['reads'] >= 1
 
     # Specific IDs below are fixtures; account ownership is tested in Python.
     pending = []
@@ -67,4 +76,12 @@ def verify_navigation_ui(page, context, base, native, output_dir):
     page.locator('input[placeholder="搜索订单号/商品/买家..."]:visible').fill('测试买家昵称')
     expect(page.get_by_text('测试买家昵称', exact=True)).to_be_visible()
     page.screenshot(path=str(output_dir / 'order-nickname.png'), animations='disabled')
-    print('Passed: native generic activation; notification cached nickname/history nickname/cross-shop/exact-cid/outside-first-page/refresh/manual-selection; order nickname + ID + search (offline UI fixtures)', flush=True)
+
+    # Settings and message center stay mounted. A phrase added while messages are
+    # inactive must be fetched on return; restarting the whole app is never required.
+    phrases['updated'] = True
+    page.get_by_role('button', name='消息中心', exact=True).click()
+    page.get_by_title('快捷短语', exact=True).click()
+    expect(page.get_by_text('[验收] 刚新增的快捷短语', exact=True)).to_be_visible()
+    assert phrases['reads'] >= 2
+    print('Passed: native generic activation; notification cached nickname/history nickname/cross-shop/exact-cid/outside-first-page/refresh/manual-selection; order nickname + ID + search; live quick-phrase refresh (offline UI fixtures)', flush=True)

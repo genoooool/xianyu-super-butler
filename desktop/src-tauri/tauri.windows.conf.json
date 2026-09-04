@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "externalBin": [],
+    "resources": {
+      "resources/backend/": "backend/"
+    }
+  }
+}

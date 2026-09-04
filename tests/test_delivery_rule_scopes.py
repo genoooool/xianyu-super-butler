@@ -33,11 +33,11 @@ class DeliveryRuleScopeTests(unittest.TestCase):
         self.product_card = cursor.lastrowid
         self.manager.conn.commit()
 
-        self.manager.create_delivery_rule("会员", self.global_card, user_id=1)
-        self.manager.create_delivery_rule(
+        self.global_rule = self.manager.create_delivery_rule("会员", self.global_card, user_id=1)
+        self.account_rule = self.manager.create_delivery_rule(
             "会员", self.account_card, user_id=1, cookie_id="seller-a"
         )
-        self.manager.create_delivery_rule(
+        self.product_rule = self.manager.create_delivery_rule(
             "", self.product_card, user_id=1,
             cookie_id="seller-a", item_id="item-1"
         )
@@ -73,6 +73,27 @@ class DeliveryRuleScopeTests(unittest.TestCase):
         )
 
         self.assertEqual(rules, [])
+
+    def test_running_lookup_observes_saved_rule_without_restart_and_keeps_scope(self):
+        before = self.manager.get_delivery_rules_for_item(
+            "会员商品", "seller-a", "item-1"
+        )
+        self.assertEqual(before[0]["card_id"], self.product_card)
+
+        self.assertTrue(self.manager.update_delivery_rule(
+            self.product_rule,
+            card_id=self.account_card,
+            user_id=1,
+        ))
+        after = self.manager.get_delivery_rules_for_item(
+            "会员商品", "seller-a", "item-1"
+        )
+        other_account = self.manager.get_delivery_rules_for_item(
+            "会员商品", "seller-b", "item-1"
+        )
+
+        self.assertEqual(after[0]["card_id"], self.account_card)
+        self.assertEqual(other_account[0]["card_id"], self.global_card)
 
 
 if __name__ == "__main__":

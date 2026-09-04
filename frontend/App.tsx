@@ -96,7 +96,7 @@ const App: React.FC = () => {
       if (!active) return;
       if (error?.response?.status === 503) {
         setRememberAvailable(true);
-        setLoginError('钥匙串读取未完成，可手动登录；勾选后成功登录可重新保存。');
+        setLoginError('系统安全凭据读取未完成，可手动登录；勾选后成功登录可重新保存。');
       }
     });
     return () => { active = false; };
@@ -222,7 +222,7 @@ const App: React.FC = () => {
               localStorage.setItem('auth_token', res.token);
               if (rememberAvailable && rememberLogin) {
                 try { await saveLogin(res.username || username, password); }
-                catch { notify('已登录，但钥匙串保存结果未确认。请检查系统授权，下次登录时核对是否已记住。', 'error'); }
+                catch { notify('已登录，但系统安全凭据保存结果未确认。请检查系统授权，下次登录时核对是否已记住。', 'error'); }
               }
               setPassword(''); loginEdited.current = false;
               setIsAdmin(Boolean(res.is_admin));
@@ -348,11 +348,11 @@ const App: React.FC = () => {
                           if (checked) { setRememberLogin(true); return; }
                           setRememberBusy(true);
                           try { await forgetLogin(); setRememberLogin(false); setLoginError(''); }
-                          catch { setLoginError('尚未确认清除保存记录，请允许系统钥匙串访问后重试。'); }
+                          catch { setLoginError('尚未确认清除保存记录，请允许系统安全凭据访问后重试。'); }
                           finally { setRememberBusy(false); }
                         }} />记住账号和密码
                     </label>
-                    <p className="text-xs text-gray-400">仅保存在本机系统钥匙串；取消勾选会清除已保存记录。</p>
+                    <p className="text-xs text-gray-400">仅保存在本机系统安全凭据中；取消勾选会清除已保存记录。</p>
                   </div>}
 
                   {loginNotice && (

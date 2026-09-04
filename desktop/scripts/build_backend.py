@@ -19,7 +19,11 @@ TAURI = DESKTOP / "src-tauri"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True, help="Rust target triple used by Tauri")
-    parser.add_argument("--layout", choices=("onedir", "onefile"), default="onedir" if sys.platform == "darwin" else "onefile")
+    parser.add_argument(
+        "--layout",
+        choices=("onedir", "onefile"),
+        default="onedir" if sys.platform in {"darwin", "win32"} else "onefile",
+    )
     parser.add_argument("--output-dir", type=Path, help="Fresh build directory; existing paths are never removed")
     parser.add_argument("--stage-dir", type=Path, default=TAURI)
     parser.add_argument("--static-dir", type=Path, default=ROOT / "static")
@@ -37,8 +41,8 @@ def main() -> int:
     if os.name == "nt":
         output_name += ".exe"
 
-    if args.layout == "onedir" and sys.platform != "darwin":
-        raise ValueError("onedir packaging is currently verified on macOS only")
+    if args.layout == "onedir" and sys.platform not in {"darwin", "win32"}:
+        raise ValueError("onedir packaging is currently supported on macOS and Windows only")
     output = args.output_dir
     if output is None:
         output = Path(tempfile.mkdtemp(prefix="backend-build-", dir=DESKTOP))
@@ -104,7 +108,11 @@ def main() -> int:
     subprocess.run(command, cwd=ROOT, check=True,
                    env=dict(os.environ, PYINSTALLER_CONFIG_DIR=str(output / "cache")))
 
-    built = dist / ("xianyu-backend.exe" if os.name == "nt" else "xianyu-backend")
+    built = (
+        dist / "xianyu-backend"
+        if args.layout == "onedir"
+        else dist / ("xianyu-backend.exe" if os.name == "nt" else "xianyu-backend")
+    )
     if not built.exists():
         raise FileNotFoundError(f"PyInstaller output not found: {built}")
 

@@ -32,6 +32,7 @@ def main() -> int:
         TAURI / "src" / "main.rs",
         TAURI / "capabilities" / "default.json",
         TAURI / "tauri.macos.conf.json",
+        TAURI / "tauri.windows.conf.json",
         TAURI / "binaries" / ".gitkeep",
         TAURI / "resources" / "playwright",
     ]
@@ -53,6 +54,10 @@ def main() -> int:
     require(mac_config['bundle']['externalBin'] == [] and
             mac_config['bundle']['resources'].get('resources/backend/') == 'backend/',
             'macOS must ship the complete one-directory backend without a redundant onefile sidecar')
+    windows_config = json.loads((TAURI / 'tauri.windows.conf.json').read_text(encoding='utf-8'))
+    require(windows_config['bundle']['externalBin'] == [] and
+            windows_config['bundle']['resources'].get('resources/backend/') == 'backend/',
+            'Windows must ship the complete one-directory backend without a redundant onefile sidecar')
     require(
         bundle.get("windows", {}).get("nsis", {}).get("installMode") == "currentUser",
         "Windows installer must use current-user mode",

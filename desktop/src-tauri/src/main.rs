@@ -15,7 +15,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, RunEvent, WindowEvent,
 };
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
@@ -25,6 +25,8 @@ use uuid::Uuid;
 
 #[cfg(target_os = "macos")]
 mod macos_notifications;
+#[cfg(target_os = "windows")]
+mod windows_notifications;
 mod updater;
 
 struct BackendProcess(Mutex<Option<CommandChild>>);
@@ -41,9 +43,14 @@ fn show_notification(
         let _ = app;
         macos_notifications::show(title, body, sound, target).map_err(|error| error.to_string())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        // Sound preference is currently exposed only by the macOS client.
+        let _ = sound;
+        windows_notifications::show(&app.config().identifier, title, body, target)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        // Sound preference and click routing are currently native on macOS/Windows.
         let _ = (sound, target);
         app.notification()
             .builder()
@@ -115,7 +122,12 @@ async fn watch_notifications(
     let mut cursor = 0;
     loop {
         #[cfg(target_os = "macos")]
-        if let Some(target) = macos_notifications::take_click() {
+        let clicked_target = macos_notifications::take_click();
+        #[cfg(target_os = "windows")]
+        let clicked_target = windows_notifications::take_click();
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let clicked_target: Option<String> = None;
+        if let Some(target) = clicked_target {
             show_main_window(&app);
             let _ = client.post(format!("{base_url}/desktop/notifications/activate"))
                 .header("Cookie", format!("xianyu_desktop_access={token}"))
@@ -264,12 +276,16 @@ fn start_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
     append_launcher_log(&data_dir, &format!("starting backend on 127.0.0.1:{port}"));
     set_splash_status(&window, "正在启动本地服务…");
 
-    // macOS ships the complete runtime as read-only bundle resources, avoiding
-    // onefile extraction on every launch. Keep the legacy/Windows fallback.
+    // macOS and Windows ship the complete runtime as read-only bundle resources,
+    // avoiding onefile extraction on every launch. Keep a legacy/Linux fallback.
+    #[cfg(target_os = "windows")]
+    let backend_relative = "backend/xianyu-backend.exe";
+    #[cfg(not(target_os = "windows"))]
+    let backend_relative = "backend/xianyu-backend";
     let backend_path = app
         .path()
-        .resolve("backend/xianyu-backend", BaseDirectory::Resource)?;
-    let command = if cfg!(target_os = "macos") && backend_path.is_file() {
+        .resolve(backend_relative, BaseDirectory::Resource)?;
+    let command = if cfg!(any(target_os = "macos", target_os = "windows")) && backend_path.is_file() {
         app.shell().command(backend_path)
     } else {
         app.shell().sidecar("xianyu-backend")?

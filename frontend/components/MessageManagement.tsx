@@ -584,10 +584,13 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
   }, []);
 
   useEffect(() => {
+    if (!isActive) return;
+    let cancelled = false;
     getQuickPhrases()
-      .then(setQuickPhrases)
-      .catch(() => setQuickPhrases([]));
-  }, []);
+      .then(value => { if (!cancelled) setQuickPhrases(value); })
+      .catch(() => { if (!cancelled) setQuickPhrases([]); });
+    return () => { cancelled = true; };
+  }, [isActive]);
 
   // 插入短语到输入框而不是直接发送，方便先改再发
   const insertPhrase = (phrase: QuickPhrase) => {

@@ -156,8 +156,11 @@ def main() -> int:
         if args.backend
         else root / "desktop" / "src-tauri" / "binaries" / f"xianyu-backend-{args.target}{suffix}"
     )
-    directory_backend = root / 'desktop' / 'src-tauri' / 'resources' / 'backend' / 'xianyu-backend'
-    if not args.backend and sys.platform == 'darwin' and directory_backend.is_file():
+    directory_backend = (
+        root / 'desktop' / 'src-tauri' / 'resources' / 'backend'
+        / ('xianyu-backend.exe' if os.name == 'nt' else 'xianyu-backend')
+    )
+    if not args.backend and directory_backend.is_file():
         backend = directory_backend
     if not backend.is_file():
         raise FileNotFoundError(backend)

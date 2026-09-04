@@ -26,5 +26,8 @@ tar = "0.4"
 tokio = { version = "1.47", features = ["time", "macros", "sync"] }
 uuid = { version = "1.18", features = ["v4"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+notify-rust = "4.18.0"
+
 [dev-dependencies]
 tauri = { version = "2.11.5", features = ["test"] }
