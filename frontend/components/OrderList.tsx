@@ -89,6 +89,7 @@ const OrderList: React.FC = () => {
       order.order_id?.toLowerCase().includes(searchLower) ||
       order.item_id?.toLowerCase().includes(searchLower) ||
       order.buyer_id?.toLowerCase().includes(searchLower) ||
+      order.buyer_name?.toLowerCase().includes(searchLower) ||
       order.item_title?.toLowerCase().includes(searchLower) ||
       order.receiver_name?.toLowerCase().includes(searchLower) ||
       order.receiver_phone?.toLowerCase().includes(searchLower)
@@ -608,7 +609,8 @@ const OrderList: React.FC = () => {
                   </td>
                   <td data-label="买家信息">
                       <div className="flex flex-col gap-0.5">
-                          <div className="text-sm font-bold text-gray-800">{order.buyer_id || '未知买家'}</div>
+                          <div className="text-sm font-bold text-gray-800">{order.buyer_name || order.buyer_id || '未知买家'}</div>
+                          {order.buyer_name && <div className="text-xs text-gray-500">ID：{order.buyer_id}</div>}
                           {order.receiver_name && (
                               <div className="text-xs text-gray-600">收货人：{order.receiver_name}</div>
                           )}
@@ -833,6 +835,7 @@ const OrderList: React.FC = () => {
                 <h4 className="text-lg font-bold text-gray-800">买家信息</h4>
                 <div className="space-y-3 rounded-md border border-gray-200 bg-gray-50 p-4">
                   <div>
+                    {selectedOrder.buyer_name && <div className="mb-1 font-bold">{selectedOrder.buyer_name}</div>}
                     <div className="text-xs text-gray-500 mb-1">买家ID</div>
                     <div className="font-bold text-gray-900">{selectedOrder.buyer_id}</div>
                   </div>

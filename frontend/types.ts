@@ -76,6 +76,7 @@ export interface Order {
   item_image?: string;
   item_price?: string;
   buyer_id: string;
+  buyer_name?: string;
   quantity: number;
   amount: string;
   buy_num?: number;

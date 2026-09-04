@@ -5,13 +5,17 @@ import secrets
 import sys
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security import HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class NotificationPreference(BaseModel):
     enabled: bool
     sound: bool = False
     save: bool = False
+
+
+class NotificationClick(BaseModel):
+    target: str = Field(default='', max_length=64)
 
 
 def create_desktop_notifications_router(hub, desktop_token, verify_token, settings_store=None):
@@ -41,6 +45,29 @@ def create_desktop_notifications_router(hub, desktop_token, verify_token, settin
         if not desktop_token:
             raise HTTPException(404, "仅桌面客户端可用")
 
+    def require_native(request):
+        require_desktop()
+        supplied = request.headers.get("X-Xianyu-Desktop-Token", "")
+        if not secrets.compare_digest(supplied, desktop_token):
+            raise HTTPException(403, "仅桌面启动器可读取提醒")
+
+    def validate(token, owner):
+        from fastapi.security import HTTPAuthorizationCredentials
+        user = verify_token(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token))
+        return bool(user and user["user_id"] == owner)
+
+    @router.post('/activate')
+    def activate(click: NotificationClick, request: Request):
+        require_native(request)
+        return {'queued': hub.activate(click.target, validate)}
+
+    @router.post('/activation')
+    def activation(auth=Depends(session)):
+        require_desktop()
+        def owns_account(cookie_id):
+            return bool(settings_store and cookie_id in settings_store.get_all_cookies(auth[1]))
+        return {'navigation': hub.take_activation(*auth, owns_account)}
+
     @router.get("/status")
     def status(auth=Depends(session)):
         result = hub.status(auth[0]) if desktop_token else {"available": False, "active": False}
@@ -67,16 +94,7 @@ def create_desktop_notifications_router(hub, desktop_token, verify_token, settin
 
     @router.get("/poll")
     def poll(request: Request, after: int = Query(0, ge=0)):
-        require_desktop()
-        supplied = request.headers.get("X-Xianyu-Desktop-Token", "")
-        if not secrets.compare_digest(supplied, desktop_token):
-            raise HTTPException(403, "仅桌面启动器可读取提醒")
-
-        def validate(token, owner):
-            from fastapi.security import HTTPAuthorizationCredentials
-            user = verify_token(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token))
-            return bool(user and user["user_id"] == owner)
-
+        require_native(request)
         return hub.poll(after, validate)
 
     return router

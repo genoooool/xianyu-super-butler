@@ -155,7 +155,7 @@ async def request_handoff(instance, db, *, owner_id, chat_id, buyer_id, buyer_na
     try:
         from app.desktop_notifications import desktop_notifications
         if notify:
-            desktop_notifications.publish_handoff(user_id=owner_id, identity=(instance.cookie_id, ticket['chat_id'], ticket['revision']))
+            desktop_notifications.publish_handoff(user_id=owner_id, identity=(instance.cookie_id, ticket['chat_id'], ticket['revision']), buyer_id=buyer_id)
     except Exception:
         pass
     try:

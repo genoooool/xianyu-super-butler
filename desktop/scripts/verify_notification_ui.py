@@ -204,6 +204,8 @@ def main():
                 sound.wait_for()
                 assert sound.get_attribute('aria-checked') == 'false'
                 assert not context.request.get(base + '/desktop/notifications/poll', headers=native).json()['sound']
+                from verify_notification_navigation_ui import verify_navigation_ui
+                verify_navigation_ui(page, context, base, native, args.output_dir)
                 assert not errors, errors
                 browser.close()
                 print('Passed: remembered-login opt-in/failed-login/restore/forget/no-plaintext UI with fixture; packaged document preview/import/collision/auth; initial-page-only chunks; sound toggle/rollback/fresh-webview persistence; native guard; logout; no JS errors', flush=True)

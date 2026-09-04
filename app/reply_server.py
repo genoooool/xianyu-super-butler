@@ -1420,6 +1420,8 @@ async def get_chat_conversations(
         parsed = parse_conversation(raw, my_id)
         if parsed:
             conversations.append(parsed)
+    from app.services.buyer_names import remember_buyer_names
+    remember_buyer_names(db_manager, cookie_id, [(c.get('otherUserId'), c.get('otherUserName')) for c in conversations])
     return {
         "success": True,
         "data": {
@@ -7535,9 +7537,12 @@ def get_user_orders(
                 item_titles[row[0]] = row[1]
 
         for cid in user_cookies.keys():
+            from app.services.buyer_names import buyer_names
+            names = buyer_names(db_manager, user_id, cid)
             orders = db_manager.get_orders_by_cookie(cid, limit=1000)
             for order in orders:
                 order['cookie_id'] = cid
+                order['buyer_name'] = names.get(str(order.get('buyer_id') or ''), '')
                 # 添加 item_title 字段
                 order['item_title'] = item_titles.get(order.get('item_id'), '')
                 # 状态计数在筛选之前统计，保证各标签数字始终是全量口径

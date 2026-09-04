@@ -3,10 +3,21 @@
 #import <os/log.h>
 #include <stdbool.h>
 
+static void (*notificationClick)(const char *);
+
 @interface XianyuNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
 @end
 
 @implementation XianyuNotificationDelegate
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+       didReceiveNotificationResponse:(UNNotificationResponse *)response
+                withCompletionHandler:(void (^)(void))completionHandler {
+    if ([response.actionIdentifier isEqualToString:UNNotificationDefaultActionIdentifier] && notificationClick) {
+        id target = response.notification.request.content.userInfo[@"route"];
+        notificationClick([target isKindOfClass:[NSString class]] ? [target UTF8String] : "");
+    }
+    completionHandler();
+}
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
       willPresentNotification:(UNNotification *)notification
         withCompletionHandler:(void (^)(UNNotificationPresentationOptions))completionHandler {
@@ -24,7 +35,8 @@
 static XianyuNotificationDelegate *notificationDelegate;
 static UNUserNotificationCenter *notificationCenter;
 
-void xianyu_notifications_initialize(void) {
+void xianyu_notifications_initialize(void (*onClick)(const char *)) {
+    notificationClick = onClick;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         // A raw `cargo run` executable has no app identity. UN would raise an
@@ -82,12 +94,13 @@ static void sendNotification(UNUserNotificationCenter *center, UNMutableNotifica
     }];
 }
 
-void xianyu_notifications_show(const char *title, const char *body, bool sound) {
+void xianyu_notifications_show(const char *title, const char *body, bool sound, const char *target) {
     @autoreleasepool {
         UNMutableNotificationContent *content = [UNMutableNotificationContent new];
         content.title = [NSString stringWithUTF8String:title];
         content.body = [NSString stringWithUTF8String:body];
         content.sound = sound ? [UNNotificationSound defaultSound] : nil;
+        content.userInfo = @{@"route": [NSString stringWithUTF8String:target]};
         // Only generic message counts arrive here, never buyer names or text.
         sendNotification(notificationCenter, content);
     }

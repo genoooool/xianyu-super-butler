@@ -1730,6 +1730,9 @@ class XianyuLive:
             for item in batch.get("items") or []:
                 parsed = parse_sold_order(item)
                 if parsed.get("order_id") == str(order_id):
+                    from app.db_manager import db_manager
+                    from app.services.buyer_names import remember_buyer_names
+                    remember_buyer_names(db_manager, self.cookie_id, [(parsed.get("buyer_id"), parsed.get("buyer_nick"))])
                     return parsed
 
             logger.warning(f"【{self.cookie_id}】卖家端未返回订单 {order_id} 的成交数据")
@@ -10446,6 +10449,8 @@ class XianyuLive:
                         logger.info(f"📱 检测到群组消息（sessionType=30），跳过消息通知")
                     else:
                         from app.db_manager import db_manager
+                        from app.services.buyer_names import remember_buyer_names
+                        remember_buyer_names(db_manager, self.cookie_id, [(send_user_id, send_user_name)])
                         matched_filter = db_manager.matches_message_filter(
                             self.cookie_id, send_message, "skip_notify"
                         )

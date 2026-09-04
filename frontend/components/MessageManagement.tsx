@@ -47,6 +47,7 @@ import {
 import { confirmAction, notify } from '../services/feedback';
 import { EmptyState, SectionHeader } from './ui';
 import { ReplyImagePicker } from './ReplyMedia';
+import type { NotificationNavigation } from '../services/desktopNotifications';
 
 type View = 'messages' | 'filters';
 type MobilePane = 'list' | 'chat';
@@ -120,6 +121,7 @@ const isCoveredByReadWatermark = (
 
 interface MessageManagementProps {
   isActive?: boolean;
+  navigation?: NotificationNavigation | null;
 }
 
 const normalizeImageUrl = (value?: string) => {
@@ -160,7 +162,7 @@ const filterTypeLabel: Record<MessageFilterType, string> = {
   skip_notify: '跳过外部通知',
 };
 
-const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }) => {
+const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, navigation }) => {
   const [view, setView] = useState<View>('messages');
   const [mobilePane, setMobilePane] = useState<MobilePane>('list');
   const [accounts, setAccounts] = useState<ChatAccount[]>([]);
@@ -168,6 +170,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [items, setItems] = useState<Item[]>([]);
   const [activeAccountId, setActiveAccountId] = useState('');
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
+  const conversationsAccountRef = useRef('');
   const [handoffs, setHandoffs] = useState<HumanHandoff[]>([]);
   const [resumingHandoff, setResumingHandoff] = useState(false);
   const [handoffLoadError, setHandoffLoadError] = useState(false);
@@ -178,6 +181,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   // 按图片地址记录加载失败的头像，避免反复请求同一个取不到的外部地址
   const [failedAvatars, setFailedAvatars] = useState<Set<string>>(new Set());
   const [activeCid, setActiveCid] = useState('');
+  const [notificationChat, setNotificationChat] = useState<{ accountId: string; conversation: ChatConversation } | null>(null);
+  const notificationChatRef = useRef(notificationChat);
+  notificationChatRef.current = notificationChat;
+  const handledNavigation = useRef('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [query, setQuery] = useState('');
   const [searchInputUnlocked, setSearchInputUnlocked] = useState(false);
@@ -222,14 +229,21 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const activeHandoff = accountHandoffs.find((entry) => entry.chat_id === activeCid);
   // Pending chats stay reachable even when the platform list is offline, paged or rate-limited.
   const allConversations = useMemo(() => {
+    // A store switch renders before its async list arrives. Never let the old
+    // store's matching cid supply the buyer identity for the new destination.
+    const listed = conversationsAccountRef.current === activeAccountId ? conversations : [];
     const pending = handoffs.filter((entry) => entry.cookie_id === activeAccountId);
-    const extra: ChatConversation[] = pending.filter((entry) => !conversations.some((c) => c.cid === entry.chat_id)).map((entry) => ({
+    const extra: ChatConversation[] = pending.filter((entry) => !listed.some((c) => c.cid === entry.chat_id)).map((entry) => ({
       cid: entry.chat_id, rawCid: entry.chat_id, otherUserId: entry.buyer_id, otherUserName: entry.buyer_name,
       itemId: entry.item_id, lastMessageSummary: '等待人工客服处理', lastMessageTime: entry.created_ms, unreadCount: 0,
     }));
     const ids = new Set(pending.map((entry) => entry.chat_id));
-    return [...extra, ...conversations].sort((a, b) => Number(ids.has(b.cid)) - Number(ids.has(a.cid)));
-  }, [conversations, handoffs, activeAccountId]);
+    const combined = [...extra, ...listed];
+    if (notificationChat?.accountId === activeAccountId && !combined.some((c) => c.cid === notificationChat.conversation.cid)) {
+      combined.unshift(notificationChat.conversation);
+    }
+    return combined.sort((a, b) => Number(ids.has(b.cid)) - Number(ids.has(a.cid)));
+  }, [conversations, handoffs, activeAccountId, notificationChat]);
   const activeConversation = allConversations.find((conversation) => conversation.cid === activeCid);
 
   const itemMap = useMemo(
@@ -357,7 +371,8 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
       if (accountIdRef.current !== activeAccountId) return;
       const incoming = result.conversations || [];
       const currentCid = activeCidRef.current;
-      const pendingCurrent = handoffsRef.current.some((entry) => entry.cookie_id === activeAccountId && entry.chat_id === currentCid);
+      const isNotificationChat = (cid: string) => notificationChatRef.current?.accountId === activeAccountId && notificationChatRef.current.conversation.cid === cid;
+      const pendingCurrent = isNotificationChat(currentCid) || handoffsRef.current.some((entry) => entry.cookie_id === activeAccountId && entry.chat_id === currentCid);
       const nextCid = pendingCurrent || incoming.some((conversation) => conversation.cid === currentCid)
         ? currentCid
         : incoming[0]?.cid || '';
@@ -376,12 +391,13 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
           ? { ...conversation, unreadCount: 0 }
           : conversation;
       });
+      conversationsAccountRef.current = activeAccountId;
       setConversations(normalized);
       setActiveCid((current) => {
         // 用户已经选了会话就不要动它。会话列表是定时刷新的，一旦某次刷新
         // 因限流或数据不全而没带上当前会话，这里就会把用户强行切回第一条 ——
         // 表现为「点第二个及之后的对话，消息区一片空白」。
-        const next = current && (handoffsRef.current.some((entry) => entry.cookie_id === activeAccountId && entry.chat_id === current) || incoming.some((conversation) => conversation.cid === current))
+        const next = current && (isNotificationChat(current) || handoffsRef.current.some((entry) => entry.cookie_id === activeAccountId && entry.chat_id === current) || incoming.some((conversation) => conversation.cid === current))
           ? current
           : incoming[0]?.cid || '';
         activeCidRef.current = next;
@@ -402,11 +418,12 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     if (!silent) setMessagesLoading(true);
     try {
       const result = await getChatMessages(activeAccountId, activeCid);
+      if (destinationRef.current !== `${activeAccountId}:${activeCid}`) return;
       setMessages(result.messages || []);
     } catch (error) {
-      if (!silent) notify(`加载聊天记录失败：${(error as Error).message}`, 'error');
+      if (!silent && destinationRef.current === `${activeAccountId}:${activeCid}`) notify(`加载聊天记录失败：${(error as Error).message}`, 'error');
     } finally {
-      if (!silent) setMessagesLoading(false);
+      if (!silent && destinationRef.current === `${activeAccountId}:${activeCid}`) setMessagesLoading(false);
     }
   };
 
@@ -451,6 +468,39 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     setMobilePane('list');
     if (isActive) void loadConversations();
   }, [isActive, activeAccountId]);
+
+  useEffect(() => {
+    if (!isActive || accountsLoading || !navigation || handledNavigation.current === navigation.id) return;
+    setView('messages');
+    if (!navigation.account_id || !navigation.chat_id || !navigation.buyer_id) {
+      handledNavigation.current = navigation.id;
+      return;
+    }
+    if (!accounts.some((account) => account.accountId === navigation.account_id)) {
+      handledNavigation.current = navigation.id;
+      notify('这条通知对应的账号已不可用，请在消息中心查看', 'error');
+      return;
+    }
+    if (activeAccountId !== navigation.account_id) {
+      setActiveAccountId(navigation.account_id);
+      return;
+    }
+    // A valid clicked chat may be outside the platform's first page. Keep it
+    // reachable and load its history directly, never fall back to another buyer.
+    const conversation: ChatConversation = {
+      cid: navigation.chat_id, rawCid: navigation.chat_id, otherUserId: navigation.buyer_id,
+      otherUserName: '', lastMessageSummary: '从通知打开的会话', lastMessageTime: 0, unreadCount: 0,
+    };
+    const target = { accountId: activeAccountId, conversation };
+    notificationChatRef.current = target;
+    setNotificationChat(target);
+    activeCidRef.current = navigation.chat_id;
+    setActiveCid(navigation.chat_id);
+    setMessages([]);
+    setQuery('');
+    setMobilePane('chat');
+    handledNavigation.current = navigation.id;
+  }, [navigation, isActive, accountsLoading, accounts, activeAccountId]);
 
   useEffect(() => {
     if (isActive) void loadMessages();

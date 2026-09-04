@@ -3,7 +3,7 @@ import Sidebar from './components/Sidebar';
 import GlobalFeedback from './components/GlobalFeedback';
 import ThemeToggle from './components/ThemeToggle';
 import { login, logout, verifyToken, getPublicSettings, register, sendVerificationCode } from './services/api';
-import { useDesktopNotifications } from './services/desktopNotifications';
+import { useDesktopNotifications, NotificationNavigation } from './services/desktopNotifications';
 import { notify } from './services/feedback';
 import { readSavedLogin, saveLogin, forgetLogin } from './services/savedLogin';
 import { ShieldCheck, ArrowRight, Loader2, User, Lock, Menu, Mail, KeyRound, CheckCircle2 } from 'lucide-react';
@@ -50,7 +50,13 @@ const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('active_page') || 'dashboard');
   const [visitedTabs, setVisitedTabs] = useState(() => new Set([activeTab]));
-  useDesktopNotifications(isLoggedIn);
+  const [notificationNavigation, setNotificationNavigation] = useState<NotificationNavigation | null>(null);
+  useDesktopNotifications(isLoggedIn, (target) => {
+    setNotificationNavigation(target);
+    setVisitedTabs((previous) => new Set([...previous, 'messages']));
+    setActiveTab('messages');
+  });
+  useEffect(() => { if (!isLoggedIn) setNotificationNavigation(null); }, [isLoggedIn]);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -578,7 +584,7 @@ const App: React.FC = () => {
           </section>
           <section hidden={activeTab !== 'messages'} className="h-full min-h-0">
             {visitedTabs.has('messages') && <Suspense fallback={<PageLoader />}>
-              <MessageManagement isActive={activeTab === 'messages'} />
+                    <MessageManagement isActive={activeTab === 'messages'} navigation={notificationNavigation} />
             </Suspense>}
           </section>
           <section hidden={activeTab !== 'notifications'}>

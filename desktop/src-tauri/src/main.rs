@@ -31,16 +31,17 @@ fn show_notification(
     title: &str,
     body: &str,
     sound: bool,
+    target: &str,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let _ = app;
-        macos_notifications::show(title, body, sound).map_err(|error| error.to_string())
+        macos_notifications::show(title, body, sound, target).map_err(|error| error.to_string())
     }
     #[cfg(not(target_os = "macos"))]
     {
         // Sound preference is currently exposed only by the macOS client.
-        let _ = sound;
+        let _ = (sound, target);
         app.notification()
             .builder()
             .title(title)
@@ -59,6 +60,8 @@ struct NotificationBatch {
     handoff_count: u32,
     #[serde(default)]
     sound: bool,
+    #[serde(default)]
+    target: String,
 }
 
 impl NotificationBatch {
@@ -82,7 +85,7 @@ mod notification_batch_tests {
 
     #[test]
     fn takeover_is_distinct_and_prioritized_over_message_alerts() {
-        let batch = NotificationBatch { cursor: 3, count: 1, test_count: 1, handoff_count: 2, sound: true };
+        let batch = NotificationBatch { cursor: 3, count: 1, test_count: 1, handoff_count: 2, sound: true, target: String::new() };
         let (title, body) = batch.presentation().unwrap();
         assert_eq!(title, "闲鱼工作台 · 待人工处理");
         assert!(body.contains("2 个会话"));
@@ -92,7 +95,7 @@ mod notification_batch_tests {
 
     #[test]
     fn empty_batches_are_silent_and_messages_keep_their_title() {
-        let batch = NotificationBatch { cursor: 0, count: 0, test_count: 0, handoff_count: 0, sound: false };
+        let batch = NotificationBatch { cursor: 0, count: 0, test_count: 0, handoff_count: 0, sound: false, target: String::new() };
         assert_eq!(batch.handoff_count, 0);
         assert!(batch.presentation().is_none());
         let message = NotificationBatch { count: 1, ..batch };
@@ -108,6 +111,14 @@ async fn watch_notifications(
 ) {
     let mut cursor = 0;
     loop {
+        #[cfg(target_os = "macos")]
+        if let Some(target) = macos_notifications::take_click() {
+            show_main_window(&app);
+            let _ = client.post(format!("{base_url}/desktop/notifications/activate"))
+                .header("Cookie", format!("xianyu_desktop_access={token}"))
+                .header("X-Xianyu-Desktop-Token", &token)
+                .json(&std::collections::HashMap::from([("target", target)])).send().await;
+        }
         // Loopback only: no extra requests to Xianyu, and no webview IPC grants.
         let response = client
             .get(format!(
@@ -122,7 +133,7 @@ async fn watch_notifications(
                 if let Ok(batch) = response.json::<NotificationBatch>().await {
                     if let Some((title, body)) = batch.presentation() {
                         // Submitted is not a delivery receipt: macOS permission/DND decides visibility.
-                        if show_notification(&app, title, &body, batch.sound).is_err() {
+                        if show_notification(&app, title, &body, batch.sound, &batch.target).is_err() {
                             tokio::time::sleep(Duration::from_secs(5)).await;
                             continue;
                         }

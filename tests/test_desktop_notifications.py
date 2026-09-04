@@ -134,6 +134,44 @@ class DesktopNotificationTests(unittest.TestCase):
             thread.join()
         self.assertEqual(self.poll()["count"], 1)
 
+    def test_click_routes_matching_priority_and_is_consumed_once(self):
+        self.publish(chat_id='first')
+        self.publish(message_id='m2', account_id='shop-b', chat_id='second@goofish')
+        target = self.poll()['target']
+        self.assertNotIn('second', repr(self.poll()))
+        self.assertTrue(self.hub.activate(target, lambda *_: True))
+        route = self.hub.take_activation('owner-session', 1, lambda account: account == 'shop-b')
+        self.assertEqual((route['account_id'], route['chat_id'], route['buyer_id']), ('shop-b', 'second', 'buyer'))
+        self.assertIsNone(self.hub.take_activation('owner-session', 1, lambda _: True))
+        self.hub.publish_handoff(user_id=1, identity=('seller', 'handoff-chat', 1), buyer_id='handoff-buyer')
+        self.publish(message_id='m3', chat_id='newer')
+        self.hub.activate(self.poll()['target'], lambda *_: True)
+        self.assertEqual(self.hub.take_activation('owner-session', 1, lambda _: True)['chat_id'], 'handoff-chat')
+
+    def test_click_is_session_bound_revoked_owned_and_expiring(self):
+        self.publish()
+        target = self.poll()['target']
+        self.hub.activate(target, lambda *_: True)
+        self.assertIsNone(self.hub.take_activation('other-session', 2, lambda _: True))
+        self.assertEqual(set(self.hub.take_activation('owner-session', 1, lambda _: False)), {'id'})
+        self.now += 86401
+        self.hub.activate(target, lambda *_: True)
+        self.assertEqual(set(self.hub.take_activation('owner-session', 1, lambda _: True)), {'id'})
+        self.assertFalse(self.hub.activate(target, lambda *_: False))
+        self.hub.configure('other-session', 2, True)
+        self.hub.activate(target, lambda *_: True)
+        self.assertEqual(set(self.hub.take_activation('other-session', 2, lambda _: True)), {'id'})
+
+    def test_routing_cache_is_bounded_and_switch_clears_pending_click(self):
+        for index in range(100):
+            self.publish(message_id=str(index))
+        self.assertEqual(len(self.hub.targets), 16)
+        self.assertEqual(len(self.hub.event_targets), 16)
+        self.hub.activate(self.poll()['target'], lambda *_: True)
+        self.hub.configure('new-token', 1, True)
+        self.assertIsNone(self.hub.activation)
+        self.assertFalse(self.hub.targets)
+
 
 class DesktopNotificationRouteTests(unittest.TestCase):
     def setUp(self):
@@ -154,6 +192,20 @@ class DesktopNotificationRouteTests(unittest.TestCase):
     def test_login_required(self):
         self.assertEqual(self.client.get("/desktop/notifications/status").status_code, 401)
         self.assertEqual(self.configure("bad").status_code, 401)
+
+    def test_activation_requires_native_secret_and_consumption_requires_login(self):
+        self.configure()
+        endpoint = '/desktop/notifications/activate'
+        self.assertEqual(self.client.post(endpoint, json={'target': ''}).status_code, 403)
+        native = {'X-Xianyu-Desktop-Token': 'launch-secret'}
+        self.assertTrue(self.client.post(endpoint, headers=native, json={'target': ''}).json()['queued'])
+        consume = '/desktop/notifications/activation'
+        self.assertEqual(self.client.post(consume).status_code, 401)
+        self.assertIsNone(self.client.post(consume, headers={'Authorization': 'Bearer b'}).json()['navigation'])
+        self.assertIn('id', self.client.post(consume, headers={'Authorization': 'Bearer a'}).json()['navigation'])
+        self.assertIsNone(self.client.post(consume, headers={'Authorization': 'Bearer a'}).json()['navigation'])
+        self.tokens.pop('a')
+        self.assertFalse(self.client.post(endpoint, headers=native, json={'target': ''}).json()['queued'])
 
     def test_poll_requires_native_secret_and_revocation_is_checked(self):
         self.assertEqual(self.configure().status_code, 200)

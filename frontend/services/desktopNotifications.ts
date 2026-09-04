@@ -1,7 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { get, post } from '../lib/request';
 
 const preferenceKey = 'desktop_message_notifications';
+export type NotificationNavigation = { id: string; account_id?: string; chat_id?: string; buyer_id?: string };
 const soundPreferenceKey = 'desktop_message_notification_sound';
 const preferenceEvent = 'desktop-notification-preference';
 export const desktopNotificationsEnabled = () => localStorage.getItem(preferenceKey) !== 'false';
@@ -64,14 +65,19 @@ async function setPreference(key: string, enabled: boolean) {
 
 // Native Rust polls the in-memory event queue even when this webview is hidden.
 // The UI only binds that queue to its authenticated user, never to a page tab.
-export function useDesktopNotifications(loggedIn: boolean) {
+export function useDesktopNotifications(loggedIn: boolean, onNavigate?: (target: NotificationNavigation) => void) {
+  const navigateRef = useRef(onNavigate);
+  navigateRef.current = onNavigate;
   useEffect(() => {
     if (!loggedIn) return;
     let stopped = false;
+    let available = false;
+    let polling = false;
     const token = localStorage.getItem('auth_token');
     const activate = async () => {
       try {
         const status = await getDesktopNotificationStatus();
+        available = status.available;
         if (!stopped && status.available && token === localStorage.getItem('auth_token')) {
           await syncPreference();
         }
@@ -80,11 +86,24 @@ export function useDesktopNotifications(loggedIn: boolean) {
       }
     };
     void activate();
+    const consumeClick = async () => {
+      if (stopped || !available || polling || token !== localStorage.getItem('auth_token')) return;
+      polling = true;
+      try {
+        const result = await post<{ navigation: NotificationNavigation | null }>('/desktop/notifications/activation', {});
+        if (!stopped && token === localStorage.getItem('auth_token') && result.navigation) navigateRef.current?.(result.navigation);
+      } catch { /* Local transient failure; the next click/interval can retry. */ }
+      finally { polling = false; }
+    };
+    const clicks = window.setInterval(consumeClick, 1000); // Local memory only, never polls Xianyu.
+    window.addEventListener('focus', consumeClick);
     const timer = window.setInterval(activate, 30000);
     window.addEventListener(preferenceEvent, activate);
     return () => {
       stopped = true;
       window.clearInterval(timer);
+      window.clearInterval(clicks);
+      window.removeEventListener('focus', consumeClick);
       window.removeEventListener(preferenceEvent, activate);
     };
   }, [loggedIn]);
