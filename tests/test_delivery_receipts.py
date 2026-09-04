@@ -123,7 +123,7 @@ class ReceiptFlowTests(unittest.IsolatedAsyncioTestCase):
         self.db = SimpleNamespace(
             get_item_info=Mock(return_value={'item_id': 'item'}),
             get_order_by_id=Mock(side_effect=lambda _: dict(self.order)),
-            get_all_cookies=Mock(return_value={'seller': 'offline-cookie'}),
+            get_all_cookies=Mock(return_value={'seller': 'unb=seller-platform; test=offline'}),
             get_item_multi_quantity_delivery_status=Mock(return_value=False),
             insert_or_update_order=Mock(),
         )

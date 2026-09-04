@@ -7,6 +7,7 @@ import re
 from loguru import logger
 
 from app.services.reply_delivery import require_receipt
+from app.services.shipping_validation import shipping_response_result
 
 SEND_PATH = '/r/MessageSend/sendByReceiverScope'
 _scope = ContextVar('delivery_receipt_scope', default=None)
@@ -106,17 +107,9 @@ def record_shipping(cookie_id, order_id, attempt, *, response=None, http_status=
         if error is not None:
             document['error_type'] = type(error).__name__
         elif isinstance(response, dict):
-            ret = response.get('ret')
-            values = ret if isinstance(ret, list) else []
-            codes = []
-            for value in values[:8]:
-                code = value.split('::', 1)[0] if isinstance(value, str) else ''
-                codes.append(code if re.fullmatch(r'(?:SUCCESS|FAIL_[A-Z0-9_]{1,80})', code) else '<unrecognized>')
-            document['ret_codes'] = codes
-            if values and values[0] == 'SUCCESS::调用成功':
-                document['assessment'] = 'success_by_current_rule'
-            elif codes and codes[0].startswith('FAIL_'):
-                document['assessment'] = 'rejected'
+            result = shipping_response_result(response, http_status)
+            document['ret_codes'] = result['ret_codes']
+            document['assessment'] = result['assessment']
         _emit(document)
     except Exception:
         pass

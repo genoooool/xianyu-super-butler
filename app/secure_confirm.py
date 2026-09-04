@@ -8,6 +8,7 @@ import time
 from loguru import logger
 from utils.xianyu_utils import generate_sign, trans_cookies
 from app.services.receipt_audit import record_shipping
+from app.services.shipping_validation import shipping_response_result
 
 
 class SecureConfirm:
@@ -84,10 +85,7 @@ class SecureConfirm:
 
 
     async def auto_confirm(self, order_id, item_id=None, retry_count=0):
-        """自动确认发货 - 使用真实商品ID刷新token"""
-        if retry_count >= 4:  # 最多重试3次
-            logger.error("自动确认发货失败，重试次数过多")
-            return {"error": "自动确认发货失败，重试次数过多"}
+        """Single platform write: rejected/unknown outcomes must not be blindly retried."""
 
         # 保存item_id供Token刷新使用
         if item_id:
@@ -156,25 +154,21 @@ class SecureConfirm:
                         await self._update_config_cookies()
                         logger.debug("已更新Cookie到数据库")
 
-                # 检查响应结果
-                if res_json.get('ret') and res_json['ret'][0] == 'SUCCESS::调用成功':
+                # 保留准确的业务错误；HTTP 200 本身不是成功，未知结果不得重试写操作。
+                result = shipping_response_result(res_json, response.status)
+                if result['success']:
                     logger.info(f"【{self.cookie_id}】✅ 自动确认发货成功，订单ID: {order_id}")
                     return {"success": True, "order_id": order_id}
                 else:
-                    error_msg = res_json.get('ret', ['未知错误'])[0] if res_json.get('ret') else '未知错误'
-                    logger.warning(f"【{self.cookie_id}】❌ 自动确认发货失败: {error_msg}")
+                    logger.warning(f"【{self.cookie_id}】❌ 自动确认发货停止: {result['code']}")
+                    return {**result, 'order_id': order_id}
 
-                    return await self.auto_confirm(order_id, item_id, retry_count + 1)
-
-
+        except asyncio.CancelledError as e:
+            record_shipping(self.cookie_id, order_id, retry_count + 1, error=e)
+            raise
         except Exception as e:
             record_shipping(self.cookie_id, order_id, retry_count + 1, error=e)
-            logger.error(f"【{self.cookie_id}】自动确认发货API请求异常: {self._safe_str(e)}")
-            await asyncio.sleep(0.5)
-
-            # 网络异常也进行重试
-            if retry_count < 2:
-                logger.info(f"【{self.cookie_id}】网络异常，准备重试...")
-                return await self.auto_confirm(order_id, item_id, retry_count + 1)
-
-            return {"error": f"网络异常: {self._safe_str(e)}", "order_id": order_id}
+            logger.error(f"【{self.cookie_id}】自动确认发货API结果未确认: {type(e).__name__}")
+            return {'success': False, 'order_id': order_id, 'assessment': 'unknown',
+                    'code': 'SHIPPING_UNCONFIRMED',
+                    'error': '闲鱼发货结果未确认（网络或响应异常），请先检查闲鱼订单状态，勿重复完整发货'}

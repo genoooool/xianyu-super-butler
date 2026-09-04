@@ -8218,6 +8218,15 @@ async def manual_ship_orders(
                 item_id = order.get('item_id')
                 buyer_id = order.get('buyer_id')
 
+                # 同一工作台可以同时登录买卖双方，登录用户拥有Cookie并不等于该账号是卖家。
+                # 两种手动模式都必须在建平台会话、取卡或发送消息之前验证。
+                from app.services.shipping_validation import shipping_owner_error
+                owner_error = shipping_owner_error(db_manager, order, cookie_id, user_cookies.get(cookie_id))
+                if owner_error:
+                    results.append({'order_id': order_id, 'success': False, 'message': owner_error})
+                    failed_count += 1
+                    continue
+
                 if ship_mode == 'status_only':
                     # ====== 仅修改闲鱼发货状态 ======
                     if not item_id:
