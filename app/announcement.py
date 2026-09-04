@@ -22,6 +22,7 @@
     }
 """
 import asyncio
+import os
 import time
 from typing import Any, Dict, Optional
 
@@ -55,7 +56,7 @@ FETCH_TIMEOUT = 8
 # 本软件版本号。发布新版时改这里，并同步更新公网服务器上 JSON 的 latest_version。
 # 注意不要复用 global_config.yml 里的 APP_CONFIG.app_version —— 那是伪装成闲鱼
 # 客户端时上报给平台的协议版本，与本软件版本无关。
-APP_VERSION = '3.1.0'
+from app.desktop_updates import APP_VERSION
 
 
 def get_local_version() -> str:
@@ -156,6 +157,10 @@ async def get_announcement_payload(force: bool = False) -> Dict[str, Any]:
         'error': '',
     }
 
+    # Desktop releases are managed by the native signed updater, not upstream
+    # notices or old saved announcement URLs. Keep old server API compatible.
+    if os.getenv('XIANYU_DESKTOP', '').lower() in ('1', 'true', 'yes'):
+        return base
     enabled = str(db_manager.get_system_setting(ANNOUNCEMENT_ENABLED_KEY) or '').strip().lower()
     if enabled in ('0', 'false', 'no'):
         return base

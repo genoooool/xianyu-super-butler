@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import DesktopNotificationSettings from './DesktopNotificationSettings';
+import SoftwareUpdate from './SoftwareUpdate';
 import { EnabledBadge, ReplyImage, ReplyImagePicker } from './ReplyMedia';
 import {
   Database,
@@ -239,7 +240,7 @@ const Settings: React.FC = () => {
           { id: 'ai', label: '默认 AI 配置', icon: Sparkles },
           { id: 'email', label: '邮件服务', icon: Mail },
           { id: 'phrases', label: '快捷短语', icon: Zap },
-          { id: 'notice', label: '公告与更新', icon: Megaphone },
+          { id: 'notice', label: '软件更新', icon: RefreshCw },
         ]}
       />
 
@@ -478,62 +479,7 @@ const Settings: React.FC = () => {
         </div>
       )}
 
-      {activeSection === 'notice' && (
-        <div className="grid gap-4 xl:grid-cols-2">
-          <section className="section-panel">
-            <SectionHeader
-              title="公告与更新"
-              description="填入你的公网 JSON 地址后，系统会定时拉取公告并检查新版本。"
-              icon={Megaphone}
-            />
-            <SettingToggle
-              title="启用公告与更新检查"
-              description="关闭后不再拉取远端公告，也不提示新版本。"
-              checked={settings.announcement_enabled !== 'false'}
-              onChange={() => setSettings({
-                ...settings,
-                announcement_enabled: settings.announcement_enabled === 'false' ? 'true' : 'false',
-              })}
-            />
-            <SettingToggle
-              title="展示公告"
-              description="关闭后顶部横幅和「关于」页都不再显示公告内容，仍会正常检查新版本。"
-              checked={toBool(settings.announcement_show_notice, true)}
-              onChange={() => setSettings({
-                ...settings,
-                announcement_show_notice: !toBool(settings.announcement_show_notice, true),
-              })}
-            />
-            <SettingToggle
-              title="展示版本更新提示"
-              description="关闭后不再弹出新版本横幅，公告照常显示。适合不希望团队成员自行升级的场景。"
-              checked={toBool(settings.announcement_show_update, true)}
-              onChange={() => setSettings({
-                ...settings,
-                announcement_show_update: !toBool(settings.announcement_show_update, true),
-              })}
-            />
-            <div className="px-4 py-3">
-              <label className="field-label">公告 JSON 地址</label>
-              <input
-                type="url"
-                value={settings.announcement_source_url || ''}
-                onChange={e => setSettings({
-                  ...settings,
-                  announcement_source_url: e.target.value,
-                })}
-                placeholder="https://connect.corleom.com/announcement.json（留空即用此地址）"
-                className="ios-input mt-1 w-full rounded-md px-3 py-2 text-sm"
-              />
-              <p className="mt-1.5 text-xs text-gray-500">
-                留空则使用官方公告源，可填入自建地址替换。
-                后端每 10 分钟拉取一次并缓存；远端不可用时沿用上次结果。
-                在「关于」页可手动点「检查更新」立即刷新。
-              </p>
-            </div>
-          </section>
-        </div>
-      )}
+      {activeSection === 'notice' && <SoftwareUpdate />}
 
       {activeSection === 'phrases' && (
         <section className="section-panel">

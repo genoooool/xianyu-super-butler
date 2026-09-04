@@ -1,6 +1,7 @@
 """Manual workbench replies leave the conversation off until an explicit switch-on."""
 from app.services.human_handoff import HumanHandoffs, chat_key
 from app.services.reply_delivery import ReceiptRejected, ReplyDeliveryError, require_receipt, send_parts
+from app.desktop_updates import update_gate
 
 
 def receipt_message_id(receipt):
@@ -15,6 +16,7 @@ def receipt_message_id(receipt):
     return ''
 
 
+@update_gate.operation
 async def send_manual_reply(instance, db, owner_id, cid, toid, text, images, clear_timed_pause):
     cid = chat_key(cid)
     toid = str(toid).strip().split('@', 1)[0]

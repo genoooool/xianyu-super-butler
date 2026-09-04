@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 import test_human_handoff as handoff_tests
+from app.desktop_updates import update_gate
 
 
 class MessageIdentityPipelineTests(unittest.IsolatedAsyncioTestCase):
@@ -23,7 +24,7 @@ class MessageIdentityPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.knowledge = KnowledgeService(self.db)
         self.db.matches_message_filter = Mock(return_value=False)
         self.db.get_ai_reply_settings = Mock(return_value={'ai_enabled': True})
-        self.env = dict(asyncio=asyncio, time=time, logger=Mock(), AUTO_REPLY={'enabled': True},
+        self.env = dict(update_gate=update_gate, asyncio=asyncio, time=time, logger=Mock(), AUTO_REPLY={'enabled': True},
                         pause_manager=SimpleNamespace(is_chat_paused=lambda *_: False))
         self.instance._add_reply_decision_log = Mock(return_value=1)
         self.instance._update_reply_decision_log = Mock()

@@ -33,6 +33,8 @@ from app.product_automation import ProductAutomationService
 from app.file_log_collector import setup_file_logging, get_file_log_collector
 from app.desktop_notifications import desktop_notifications
 from app.routers.desktop_notifications import create_desktop_notifications_router
+from app.desktop_updates import desktop_updates, update_gate, UpdateBusy
+from app.routers.desktop_updates import create_desktop_updates_router
 from app.routers.ai_knowledge import create_ai_knowledge_router
 from app.routers.desktop_credentials import create_desktop_credentials_router
 from app.routers.delivery_block import create_delivery_block_router
@@ -353,6 +355,7 @@ else:
 
 app.include_router(create_delivery_block_router(get_current_user, db_manager))
 app.include_router(create_desktop_notifications_router(desktop_notifications, DESKTOP_ACCESS_TOKEN, verify_token, db_manager))
+app.include_router(create_desktop_updates_router(desktop_updates, update_gate, DESKTOP_ACCESS_TOKEN, verify_token))
 app.include_router(create_ai_knowledge_router(get_current_user, db_manager))
 
 def _clear_handoff_timed_pause(chat_id, cookie_id, confirmed_message_ids=()):
@@ -380,12 +383,25 @@ async def require_desktop_access_cookie(request, call_next):
         supplied = request.cookies.get(DESKTOP_ACCESS_COOKIE, "")
         if not secrets.compare_digest(supplied, DESKTOP_ACCESS_TOKEN):
             return JSONResponse(status_code=403, content={"detail": "桌面会话未初始化"})
-    return await call_next(request)
+    guarded = DESKTOP_ACCESS_TOKEN and not (
+        request.url.path.startswith(('/desktop/updates/', '/desktop/notifications/', '/static/', '/assets/'))
+        or request.url.path in ('/health', '/desktop/bootstrap', '/')
+    )
+    if not guarded:
+        return await call_next(request)
+    try:
+        update_gate.enter()
+    except UpdateBusy as error:
+        return JSONResponse(status_code=503, content={'detail': str(error)})
+    try:
+        return await call_next(request)
+    finally:
+        update_gate.leave()
 
 # 添加请求日志中间件
 @app.middleware("http")
 async def log_requests(request, call_next):
-    if request.url.path == '/desktop/notifications/poll':
+    if request.url.path in ('/desktop/notifications/poll', '/desktop/updates/poll', '/desktop/updates/status', '/desktop/updates/report'):
         # Native queue polling is frequent and carries no business operation.
         # Keep errors visible without writing two success lines every 2 seconds.
         response = await call_next(request)

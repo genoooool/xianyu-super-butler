@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import HTTPException
+from app.desktop_updates import update_gate
 from app.services.reply_delivery import require_receipt  # load before replacing DB module
 
 
@@ -31,7 +32,7 @@ def load_methods():
     assert len(methods) == len(METHODS)
     cls = ast.ClassDef(name='DeliveryLive', bases=[], keywords=[], body=methods, decorator_list=[])
     ids = itertools.count()
-    env = dict(asyncio=asyncio, base64=base64, json=json, time=time, logger=Mock(),
+    env = dict(update_gate=update_gate, asyncio=asyncio, base64=base64, json=json, time=time, logger=Mock(),
                generate_mid=lambda: str(next(ids)), generate_uuid=lambda: str(next(ids)))
     exec(compile(ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[])), str(ROOT / 'XianyuAutoAsync.py'), 'exec'), env)
     return env['DeliveryLive']

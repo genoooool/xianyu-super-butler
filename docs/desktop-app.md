@@ -30,6 +30,49 @@ macOS 登录页可勾选“记住账号和密码”，默认不勾选；验证�
 
 工作台顶部不再挂载公告组件，因此不展示滚动公告或版本更新横幅。关于页的内容不属于顶部横幅。
 
+## 自有软件更新（1.0.0 起）
+
+“系统设置 → 软件更新”和“关于”共用更新入口。仅管理员可操作；本轮支持 macOS，
+Windows/Linux 仅提供手动下载入口。用户点击检查才访问自有 GitHub Release，
+不在后台拉原作者公告，也不自动弹横幅/自动安装。
+
+- 固定清单：`https://github.com/genoooool/xianyu-super-butler/releases/latest/download/latest.json`。
+  版本、更新内容、当前平台下载地址、签名及 `data_compatibility` 随正式 Release 一起发布。
+  没清单、网络失败、无新版、格式不兼容分别展示；不把检查失败当已是最新版。
+- 只允许本仓库 HTTPS 下载、更高的正式版本。原生 Tauri Updater 验证签名后，
+  再核对签名包内部 `update-contract.json` 的应用标识、版本、机型和数据兼容编号。
+  清单不能通过冒写新版本号来安装旧签名包。压缩下载限制512MiB，解压内容限制4GiB。
+- 网页不新增 updater/shell IPC 权限。普通管理员 Bearer 登录发起操作；原生轮询、
+  状态回写与安装准备还需桌面启动密钥/HttpOnly Cookie。操作固定版本、防重复提交，
+  下载完成后再次验证原会话。退出登录/失效后不能继续安装。
+- 下载时业务照常运行；安装前用原子空闲检查暂时阻止新操作，消息/发货/HTTP操作仍繁忙则
+  拒绝本次安装。已在执行的业务不被更新强行取消；等待任务不提前标记去重。
+  后端完全退出后才替换程序并重启。暂时门禁只在内存中，不改店铺、AI开关或数据库。
+- 不提供额外自动回退/恢复旧备份机制。升级仅替换 App，不清理用户数据目录；
+  同一 Mac 用户、同一应用标识重装会读取旧数据。不能用彻底卸载工具删除关联数据。
+  数据格式改变必须调整兼容编号并审查迁移，不可为让升级通过而保持假兼容。
+
+本机发布流程（不依赖 Actions）：
+
+1. 同步 `tauri.conf.json`、`Cargo.toml`、`desktop/package.json`、
+   `app/desktop_updates.py` 的正式版本；运行相关回归。首次自有版本为1.0.0。
+2. 直接 Vite 构建至新目录，再用 `build_backend.py --static-dir` 指定同一份新资源；
+   `TAURI_CONFIG='{"bundle":{"resources":[],"externalBin":[]}}' cargo build --release` 编译原生壳。
+   该覆盖仅用于手工组包，完整运行资源由下步复制，不改数据目录。
+3. `package_macos_release.py` 接收 `--base-app`（已验证资源/浏览器包）、`--backend`、
+   `--native`、全新 `--output-dir`、仓库外 `--signing-key` 和 `--notes`。
+   它核对原生版本/公钥，生成并签名 `.app.tar.gz`、`.sig`、`latest.json` 和手动安装 ZIP。
+   私钥权限必须600，仅保存在本机；脚本不上传、安装或清除旧资源。
+4. 对最终包运行 `verify_updates_ui.py`、`verify_native_updates.py` 与
+   `verify_updater_install.py`。最后一个在 `/private/tmp` 的标记副本中运行真实安装器，
+   不使用正式数据，测试后保留证据；测试用HTTP/版本覆盖只在Rust `cfg(test)` 内。
+5. 经明确发布授权，建立同版本 `v版本号` Release，上传上述四个发布文件；不要把
+   `inherited-backend-unused`、私钥、日志、测试数据或整个输出目录上传。
+
+当前包为本机 ad-hoc macOS 签名，并非 Apple Developer ID 公证；更新包签名与苹果公证
+是两件事。首次从网络下载安装可能遇到系统安全提示。首个带更新器的版本需要手动安装一次，
+后续正式新版才能应用内更新。公开跨版本升级仍须在发布后实测，不以离线副本替换代替。
+
 ## 本机新消息弹窗
 
 登录工作台后默认启用，可在“系统设置 → 账号与同步 → 本机消息提醒”关闭或提交测试提醒。

@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 #[cfg(target_os = "macos")]
 mod macos_notifications;
+mod updater;
 
 struct BackendProcess(Mutex<Option<CommandChild>>);
 
@@ -372,6 +373,7 @@ fn start_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
                         set_splash_error(&health_window, &message);
                     }
                 }
+                tauri::async_runtime::spawn(updater::watch(notification_app.clone(), base_url.clone(), health_token.clone()));
                 watch_notifications(notification_app, client, base_url, health_token).await;
                 return;
             }
@@ -413,10 +415,29 @@ fn stop_backend(app: &tauri::AppHandle) {
     }
 }
 
+async fn stop_backend_for_update(app: &tauri::AppHandle) -> bool {
+    let pid = app.try_state::<BackendProcess>().and_then(|s| s.0.lock().ok().and_then(|g| g.as_ref().map(|c| c.pid())));
+    stop_backend(app);
+    let Some(pid) = pid else { return true; };
+    #[cfg(unix)]
+    for _ in 0..60 {
+        if !std::process::Command::new("/bin/kill").args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .status().map(|s| s.success()).unwrap_or(true) { return true; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
 fn main() {
+    if std::env::args().any(|arg| arg == "--version") {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(start_backend)
         .build(tauri::generate_context!())
         .expect("failed to build desktop application");

@@ -22,6 +22,7 @@ MANIFEST
 *.manifest
 *.spec
 .cache
+desktop/src-tauri/gen/
 *.log
 local_settings.py
 

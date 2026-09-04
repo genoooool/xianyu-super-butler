@@ -25,6 +25,7 @@ import aiohttp
 from collections import defaultdict
 from app.db_manager import db_manager
 from app.specification import combine_legacy_specification
+from app.desktop_updates import update_gate
 from utils.log_sanitizer import redact_log_record, redact_sensitive_text
 
 # 滑块验证补丁已废弃，使用集成的 Playwright 登录方法
@@ -1889,6 +1890,7 @@ class XianyuLive:
 
         return result
 
+    @update_gate.operation
     async def _handle_auto_delivery(self, websocket, message: dict, send_user_name: str, send_user_id: str,
                                    item_id: str, chat_id: str, msg_time: str):
         """统一处理自动发货逻辑"""
@@ -6121,6 +6123,7 @@ class XianyuLive:
                 logger.error(f"【{self.cookie_id}】获取订单详情异常: {self._safe_str(e)}")
                 return None
 
+    @update_gate.operation
     async def _auto_delivery(
         self,
         item_id: str,
@@ -7853,6 +7856,7 @@ class XianyuLive:
     # 确认收货致谢的默认文案。留空则不发。
     DEFAULT_THANKS_TEMPLATE = '亲，感谢支持！有任何问题随时找我~'
 
+    @update_gate.operation
     async def send_post_receipt_thanks(self, websocket, chat_id, to_user_id, order_id=None):
         """确认收货后给买家发一条致谢文本。
 
@@ -9699,6 +9703,7 @@ class XianyuLive:
             self.message_debounce_tasks[chat_id]['task'] = task
             logger.warning(f"【{self.cookie_id}】为chat_id {chat_id} 创建防抖任务，延迟 {self.message_debounce_delay} 秒")
 
+    @update_gate.operation
     async def _process_chat_message_reply(self, message_data: dict, websocket, send_user_name: str,
                                          send_user_id: str, send_message: str, item_id: str,
                                          chat_id: str, msg_time: str):
@@ -10164,6 +10169,7 @@ class XianyuLive:
             if reply_guard_token is not None:
                 reset_reply_guard(reply_guard_token)
 
+    @update_gate.operation
     async def handle_message(self, message_data, websocket):
         """处理所有类型的消息"""
         try:

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
+from app.desktop_updates import update_gate
 
 from app.services.human_handoff import (
     HANDOFF_REPLY, HandoffReply, HumanHandoffs, initialize_schema, message_timestamp, request_handoff,
@@ -197,7 +198,7 @@ class ActualReplyCallerTests(Fixture):
         self.pause = SimpleNamespace(is_chat_paused=lambda *_: self.paused, get_remaining_pause_time=lambda *_: 10)
         source = Path(__file__).resolve().parents[1] / 'XianyuAutoAsync.py'
         method = next(n for n in ast.walk(ast.parse(source.read_text())) if isinstance(n, ast.AsyncFunctionDef) and n.name == '_process_chat_message_reply')
-        self.env = dict(asyncio=asyncio, time=time, logger=Mock(), AUTO_REPLY={'enabled': True, 'api': {'enabled': False}}, pause_manager=self.pause)
+        self.env = dict(update_gate=update_gate, asyncio=asyncio, time=time, logger=Mock(), AUTO_REPLY={'enabled': True, 'api': {'enabled': False}}, pause_manager=self.pause)
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), 'exec'), self.env)
         self.instance._add_reply_decision_log = Mock(return_value=1)
         self.instance._update_reply_decision_log = Mock()

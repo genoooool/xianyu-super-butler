@@ -244,7 +244,8 @@ class ActualCallerTests(Fixture):
         source=Path(__file__).resolve().parents[1]/'XianyuAutoAsync.py'
         tree=ast.parse(source.read_text())
         method=next(n for n in ast.walk(tree) if isinstance(n,ast.AsyncFunctionDef) and n.name=='_process_chat_message_reply')
-        env=dict(asyncio=asyncio,time=time,logger=Mock(),AUTO_REPLY=dict(enabled=True,api=dict(enabled=False)),pause_manager=SimpleNamespace(is_chat_paused=lambda *args: bool(paused and paused[0])))
+        from app.desktop_updates import update_gate
+        env=dict(update_gate=update_gate,asyncio=asyncio,time=time,logger=Mock(),AUTO_REPLY=dict(enabled=True,api=dict(enabled=False)),pause_manager=SimpleNamespace(is_chat_paused=lambda *args: bool(paused and paused[0])))
         exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),env)
         self.db.matches_message_filter=lambda *args: False
         self.db.get_ai_reply_settings=lambda *args: dict(ai_enabled=True)

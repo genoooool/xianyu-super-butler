@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "闲鱼工作台",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "com.genoooool.xianyuworkbench",
   "build": {
     "frontendDist": "../ui"
@@ -23,6 +23,12 @@
     ],
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg1RTEwNURDRTJDQTU3OTQKUldTVVY4cmkzQVhoaGRoTFhJbUd5cDcwK0c5OGUyRkxPRDZadjFMZ0VGSTVIR3JJVS8vQWVSN0EK",
+      "endpoints": ["https://github.com/genoooool/xianyu-super-butler/releases/latest/download/latest.json"]
     }
   },
   "bundle": {
