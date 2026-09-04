@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { get, post } from '../lib/request';
 
 const preferenceKey = 'desktop_message_notifications';
-export type NotificationNavigation = { id: string; account_id?: string; chat_id?: string; buyer_id?: string };
+export type NotificationNavigation = { id: string; account_id?: string; chat_id?: string; buyer_id?: string; buyer_name?: string };
 const soundPreferenceKey = 'desktop_message_notification_sound';
 const preferenceEvent = 'desktop-notification-preference';
 export const desktopNotificationsEnabled = () => localStorage.getItem(preferenceKey) !== 'false';

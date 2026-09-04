@@ -66,7 +66,11 @@ def create_desktop_notifications_router(hub, desktop_token, verify_token, settin
         require_desktop()
         def owns_account(cookie_id):
             return bool(settings_store and cookie_id in settings_store.get_all_cookies(auth[1]))
-        return {'navigation': hub.take_activation(*auth, owns_account)}
+        navigation = hub.take_activation(*auth, owns_account)
+        if navigation and navigation.get('account_id') and navigation.get('buyer_id'):
+            from app.services.buyer_names import buyer_names
+            navigation['buyer_name'] = buyer_names(settings_store, auth[1], navigation['account_id']).get(navigation['buyer_id'], '')
+        return {'navigation': navigation}
 
     @router.get("/status")
     def status(auth=Depends(session)):

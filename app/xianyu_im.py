@@ -1,6 +1,7 @@
 import base64
 import json
 from typing import Any, Dict, List, Optional, Tuple
+from app.services.buyer_names import clean_buyer_name
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -100,6 +101,26 @@ def extract_message_summary(message: Dict[str, Any]) -> str:
     return ""
 
 
+def extract_sender_name(message: Dict[str, Any], wrapper=None) -> str:
+    """Prefer nickname fields. A notification title is not a user profile."""
+    extension = _as_dict(message.get('extension'))
+    wrapper = _as_dict(wrapper)
+    for candidate in (extension.get('senderNick'), extension.get('senderNickName'), wrapper.get('senderNick')):
+        name = clean_buyer_name(candidate)
+        if name:
+            return name
+    custom = _as_dict(_as_dict(message.get('content')).get('custom'))
+    decoded = _load_content(custom.get('data'))
+    # Card/system titles (including rating requests) describe the event, not the
+    # sender. Retain legacy nickname fallback only for actual text/image payloads.
+    if not decoded or decoded.get('contentType') not in (1, 2):
+        return ''
+    name = clean_buyer_name(extension.get('reminderTitle'))
+    text, _, _ = _interpret_content(decoded)
+    summaries = [text, custom.get('summary'), custom.get('degrade'), extension.get('reminderContent')]
+    return name if name and name not in summaries else ''
+
+
 def parse_conversation(raw: Dict[str, Any], my_id: str) -> Optional[Dict[str, Any]]:
     try:
         conversation = _as_dict(raw.get("singleChatConversation"))
@@ -119,22 +140,7 @@ def parse_conversation(raw: Dict[str, Any], my_id: str) -> Optional[Dict[str, An
         last_message = _as_dict(last_message_wrapper.get("message"))
         last_extension = _as_dict(last_message.get("extension"))
         sender_id = _strip_domain(last_extension.get("senderUserId"))
-        sender_name = str(last_extension.get("reminderTitle") or "")
-        if sender_id != other_id or sender_name.isdigit():
-            sender_name = ""
-
-        # reminderTitle 经常缺失或是纯数字，再从消息体里找一次昵称，
-        # 否则会话列表只能显示「闲鱼用户 123456」。
-        if not sender_name and sender_id == other_id:
-            for candidate in (
-                last_extension.get("senderNick"),
-                last_extension.get("senderNickName"),
-                last_message_wrapper.get("senderNick"),
-            ):
-                text = str(candidate or "").strip()
-                if text and not text.isdigit():
-                    sender_name = text
-                    break
+        sender_name = extract_sender_name(last_message, last_message_wrapper) if sender_id == other_id else ''
 
         return {
             "cid": cid,
@@ -185,7 +191,7 @@ def parse_message(model: Dict[str, Any], my_id: str) -> Optional[Dict[str, Any]]
         return {
             "messageId": str(message.get("messageId") or ""),
             "senderId": sender_id,
-            "senderName": str(extension.get("reminderTitle") or ""),
+            "senderName": extract_sender_name(message, model),
             "isSelf": sender_id == str(my_id),
             "type": message_type,
             "text": text,

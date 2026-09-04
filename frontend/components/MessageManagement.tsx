@@ -420,6 +420,14 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
       const result = await getChatMessages(activeAccountId, activeCid);
       if (destinationRef.current !== `${activeAccountId}:${activeCid}`) return;
       setMessages(result.messages || []);
+      const target = notificationChatRef.current;
+      if (target?.accountId === activeAccountId && target.conversation.cid === activeCid) {
+        const name = result.messages.find((message) => !message.isSelf
+          && message.senderId === target.conversation.otherUserId && message.senderName)?.senderName;
+        if (name) setNotificationChat((current) => current?.accountId === activeAccountId
+          && current.conversation.cid === activeCid && current.conversation.otherUserId === target.conversation.otherUserId
+          ? { ...current, conversation: { ...current.conversation, otherUserName: name } } : current);
+      }
     } catch (error) {
       if (!silent && destinationRef.current === `${activeAccountId}:${activeCid}`) notify(`加载聊天记录失败：${(error as Error).message}`, 'error');
     } finally {
@@ -489,7 +497,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
     // reachable and load its history directly, never fall back to another buyer.
     const conversation: ChatConversation = {
       cid: navigation.chat_id, rawCid: navigation.chat_id, otherUserId: navigation.buyer_id,
-      otherUserName: '', lastMessageSummary: '从通知打开的会话', lastMessageTime: 0, unreadCount: 0,
+      otherUserName: navigation.buyer_name || '', lastMessageSummary: '从通知打开的会话', lastMessageTime: 0, unreadCount: 0,
     };
     const target = { accountId: activeAccountId, conversation };
     notificationChatRef.current = target;

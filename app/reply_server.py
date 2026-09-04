@@ -1420,8 +1420,8 @@ async def get_chat_conversations(
         parsed = parse_conversation(raw, my_id)
         if parsed:
             conversations.append(parsed)
-    from app.services.buyer_names import remember_buyer_names
-    remember_buyer_names(db_manager, cookie_id, [(c.get('otherUserId'), c.get('otherUserName')) for c in conversations])
+    from app.services.buyer_names import enrich_conversation_names
+    enrich_conversation_names(db_manager, current_user['user_id'], cookie_id, conversations)
     return {
         "success": True,
         "data": {
@@ -1474,6 +1474,13 @@ async def get_chat_messages(
         parsed = parse_message(model, my_id)
         if parsed:
             messages.append(parsed)
+    from app.services.buyer_names import buyer_names, remember_buyer_names
+    remember_buyer_names(db_manager, cookie_id,
+                         [(m['senderId'], m['senderName']) for m in messages if not m['isSelf']], overwrite=False)
+    names = buyer_names(db_manager, current_user['user_id'], cookie_id)
+    for message in messages:
+        if not message['isSelf']:
+            message['senderName'] = names.get(message['senderId']) or message['senderName']
     messages.reverse()
     return {
         "success": True,

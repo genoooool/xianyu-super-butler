@@ -10449,8 +10449,11 @@ class XianyuLive:
                         logger.info(f"📱 检测到群组消息（sessionType=30），跳过消息通知")
                     else:
                         from app.db_manager import db_manager
-                        from app.services.buyer_names import remember_buyer_names
-                        remember_buyer_names(db_manager, self.cookie_id, [(send_user_id, send_user_name)])
+                        from app.services.buyer_names import clean_buyer_name, remember_buyer_names
+                        explicit_name = clean_buyer_name(message_10.get('senderNick') or message_10.get('senderNickName'))
+                        # Reminder copy may be a system title. Do not learn it
+                        # from push events, even when no cached nickname exists.
+                        remember_buyer_names(db_manager, self.cookie_id, [(send_user_id, explicit_name)])
                         matched_filter = db_manager.matches_message_filter(
                             self.cookie_id, send_message, "skip_notify"
                         )
