@@ -54,6 +54,9 @@ import type { NotificationNavigation } from '../services/desktopNotifications';
 
 type View = 'messages' | 'filters';
 type MobilePane = 'list' | 'chat';
+type ScopedConversation = ChatConversation & { accountId: string };
+
+const ALL_ACCOUNTS = '__all__';
 
 // 轮询间隔。会话列表与消息都要经 WebSocket 透传到闲鱼，频率过高会把账号
 // 打到限流（429 flow controled）；聊天场景 10 秒的延迟是可接受的。
@@ -171,15 +174,14 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
   const [accounts, setAccounts] = useState<ChatAccount[]>([]);
   const [accountDetails, setAccountDetails] = useState<AccountDetail[]>([]);
   const [items, setItems] = useState<Item[]>([]);
+  const [accountFilterId, setAccountFilterId] = useState(ALL_ACCOUNTS);
   const [activeAccountId, setActiveAccountId] = useState('');
-  const [conversations, setConversations] = useState<ChatConversation[]>([]);
-  const conversationsAccountRef = useRef('');
+  const [conversationsByAccount, setConversationsByAccount] = useState<Record<string, ChatConversation[]>>({});
+  const conversationsRequestRef = useRef(0);
   const [handoffs, setHandoffs] = useState<HumanHandoff[]>([]);
   const [handoffLoadError, setHandoffLoadError] = useState(false);
   const handoffsRef = useRef(handoffs);
   handoffsRef.current = handoffs;
-  const accountIdRef = useRef(activeAccountId);
-  accountIdRef.current = activeAccountId;
   // 按图片地址记录加载失败的头像，避免反复请求同一个取不到的外部地址
   const [failedAvatars, setFailedAvatars] = useState<Set<string>>(new Set());
   const [activeCid, setActiveCid] = useState('');
@@ -223,7 +225,6 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchInputTouchedRef = useRef(false);
-  const activeCidRef = useRef('');
   const readWatermarksRef = useRef<ReadWatermarks>(loadReadWatermarks());
 
   const [filters, setFilters] = useState<MessageFilter[]>([]);
@@ -241,24 +242,38 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
   const activeHandoff = accountHandoffs.find((entry) => entry.chat_id === activeCid
     && !(replyControl.state && replyControl.state.revision >= entry.revision
       && (replyControl.state.enabled || ['manual_switch', 'manual_reply'].includes(replyControl.state.reason))));
+  const listedAccountIds = useMemo(() => accountFilterId === ALL_ACCOUNTS
+    ? accounts.map((account) => account.accountId)
+    : accounts.some((account) => account.accountId === accountFilterId) ? [accountFilterId] : [],
+  [accounts, accountFilterId]);
   // Pending chats stay reachable even when the platform list is offline, paged or rate-limited.
   const allConversations = useMemo(() => {
-    // A store switch renders before its async list arrives. Never let the old
-    // store's matching cid supply the buyer identity for the new destination.
-    const listed = conversationsAccountRef.current === activeAccountId ? conversations : [];
-    const pending = handoffs.filter((entry) => entry.cookie_id === activeAccountId);
-    const extra: ChatConversation[] = pending.filter((entry) => !listed.some((c) => c.cid === entry.chat_id)).map((entry) => ({
-      cid: entry.chat_id, rawCid: entry.chat_id, otherUserId: entry.buyer_id, otherUserName: entry.buyer_name,
-      itemId: entry.item_id, lastMessageSummary: '等待人工客服处理', lastMessageTime: entry.created_ms, unreadCount: 0,
-    }));
-    const ids = new Set(pending.map((entry) => entry.chat_id));
-    const combined = [...extra, ...listed];
-    if (notificationChat?.accountId === activeAccountId && !combined.some((c) => c.cid === notificationChat.conversation.cid)) {
-      combined.unshift(notificationChat.conversation);
+    const combined: ScopedConversation[] = [];
+    const pendingKeys = new Set(handoffs.map((entry) => `${entry.cookie_id}\u0000${entry.chat_id}`));
+    listedAccountIds.forEach((accountId) => {
+      const listed = conversationsByAccount[accountId] || [];
+      listed.forEach((conversation) => combined.push({ ...conversation, accountId }));
+      handoffs.filter((entry) => entry.cookie_id === accountId
+        && !listed.some((conversation) => conversation.cid === entry.chat_id)).forEach((entry) => {
+        combined.push({ accountId, cid: entry.chat_id, rawCid: entry.chat_id, otherUserId: entry.buyer_id,
+          otherUserName: entry.buyer_name, itemId: entry.item_id, lastMessageSummary: '等待人工客服处理',
+          lastMessageTime: entry.created_ms, unreadCount: 0 });
+      });
+    });
+    if (notificationChat && listedAccountIds.includes(notificationChat.accountId)
+      && !combined.some((conversation) => conversation.accountId === notificationChat.accountId
+        && conversation.cid === notificationChat.conversation.cid)) {
+      combined.push({ ...notificationChat.conversation, accountId: notificationChat.accountId });
     }
-    return combined.sort((a, b) => Number(ids.has(b.cid)) - Number(ids.has(a.cid)));
-  }, [conversations, handoffs, activeAccountId, notificationChat]);
-  const activeConversation = allConversations.find((conversation) => conversation.cid === activeCid);
+    return combined.sort((left, right) => {
+      const pending = Number(pendingKeys.has(`${right.accountId}\u0000${right.cid}`))
+        - Number(pendingKeys.has(`${left.accountId}\u0000${left.cid}`));
+      return pending || Number(right.lastMessageTime || 0) - Number(left.lastMessageTime || 0);
+    });
+  }, [accounts, accountFilterId, conversationsByAccount, handoffs, listedAccountIds, notificationChat]);
+  const activeConversation = allConversations.find((conversation) => (
+    conversation.accountId === activeAccountId && conversation.cid === activeCid
+  ));
 
   const itemMap = useMemo(
     () => new Map(items.map((item) => [`${item.cookie_id}:${item.item_id}`, item])),
@@ -279,9 +294,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
         conversation.itemTitle,
         conversation.itemId,
         conversation.lastMessageSummary,
+        accountName(accounts.find((account) => account.accountId === conversation.accountId)),
       ].some((value) => String(value || '').toLocaleLowerCase().includes(normalized))
     );
-  }, [allConversations, query]);
+  }, [accounts, allConversations, query]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -317,9 +333,9 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
   const selectedAllFilters = filters.length > 0
     && filters.every((filter) => selectedFilterIds.includes(filter.id));
 
-  const rememberConversationRead = (conversation: ChatConversation) => {
-    if (!activeAccountId || !conversation.cid) return;
-    const key = readWatermarkKey(activeAccountId, conversation.cid);
+  const rememberConversationRead = (accountId: string, conversation: ChatConversation) => {
+    if (!accountId || !conversation.cid) return;
+    const key = readWatermarkKey(accountId, conversation.cid);
     const nextWatermark: ReadWatermark = {
       lastMessageTime: Number(conversation.lastMessageTime) || 0,
       lastMessageSummary: String(conversation.lastMessageSummary || ''),
@@ -343,79 +359,72 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
     saveReadWatermarks(readWatermarksRef.current);
   };
 
-  const openConversation = (conversation: ChatConversation) => {
-    rememberConversationRead(conversation);
-    activeCidRef.current = conversation.cid;
-    setConversations((current) => current.map((item) => (
-      item.cid === conversation.cid ? { ...item, unreadCount: 0 } : item
-    )));
+  const openConversation = (conversation: ScopedConversation) => {
+    rememberConversationRead(conversation.accountId, conversation);
+    setConversationsByAccount((current) => ({
+      ...current,
+      [conversation.accountId]: (current[conversation.accountId] || []).map((item) => (
+        item.cid === conversation.cid ? { ...item, unreadCount: 0 } : item
+      )),
+    }));
+    setActiveAccountId(conversation.accountId);
     setActiveCid(conversation.cid);
     setMobilePane('chat');
   };
 
-  const loadAccounts = async () => {
+  const loadAccounts = async (): Promise<ChatAccount[]> => {
     setAccountsLoading(true);
     try {
       const data = await getChatAccounts();
       setAccounts(data);
-      setActiveAccountId((current) => {
-        if (current && data.some((account) => account.accountId === current)) return current;
-        return data.find((account) => account.connected)?.accountId || data[0]?.accountId || '';
-      });
+      return data;
     } catch (error) {
       notify(`加载消息账号失败：${(error as Error).message}`, 'error');
+      return [];
     } finally {
       setAccountsLoading(false);
     }
   };
 
-  const loadConversations = async (silent = false) => {
-    if (!activeAccountId) {
-      setConversations([]);
-      return;
-    }
+  const loadConversations = async (silent = false, availableAccounts = accounts) => {
+    const requestId = ++conversationsRequestRef.current;
+    const targets = accountFilterId === ALL_ACCOUNTS
+      ? availableAccounts.filter((account) => account.connected)
+      : availableAccounts.filter((account) => account.accountId === accountFilterId);
+    if (!targets.length) return;
     if (!silent) setConversationsLoading(true);
     try {
-      const result = await getChatConversations(activeAccountId);
-      if (accountIdRef.current !== activeAccountId) return;
-      const incoming = result.conversations || [];
-      const currentCid = activeCidRef.current;
-      const isNotificationChat = (cid: string) => notificationChatRef.current?.accountId === activeAccountId && notificationChatRef.current.conversation.cid === cid;
-      const pendingCurrent = isNotificationChat(currentCid) || handoffsRef.current.some((entry) => entry.cookie_id === activeAccountId && entry.chat_id === currentCid);
-      const nextCid = pendingCurrent || incoming.some((conversation) => conversation.cid === currentCid)
-        ? currentCid
-        : incoming[0]?.cid || '';
-      const normalized = incoming.map((conversation) => {
-        const isOpen = isActive
-          && conversation.cid === nextCid
-          && (
-            mobilePane === 'chat'
-            || window.matchMedia('(min-width: 1024px)').matches
-          );
-        const watermark = readWatermarksRef.current[
-          readWatermarkKey(activeAccountId, conversation.cid)
-        ];
-        if (isOpen) rememberConversationRead(conversation);
-        return isOpen || isCoveredByReadWatermark(watermark, conversation)
-          ? { ...conversation, unreadCount: 0 }
-          : conversation;
-      });
-      conversationsAccountRef.current = activeAccountId;
-      setConversations(normalized);
-      setActiveCid((current) => {
-        // 用户已经选了会话就不要动它。会话列表是定时刷新的，一旦某次刷新
-        // 因限流或数据不全而没带上当前会话，这里就会把用户强行切回第一条 ——
-        // 表现为「点第二个及之后的对话，消息区一片空白」。
-        const next = current && (isNotificationChat(current) || handoffsRef.current.some((entry) => entry.cookie_id === activeAccountId && entry.chat_id === current) || incoming.some((conversation) => conversation.cid === current))
-          ? current
-          : incoming[0]?.cid || '';
-        activeCidRef.current = next;
+      // Calls are isolated by account. One unavailable shop must not clear the
+      // other shops, and the per-account request rate remains one call/10s.
+      const results = await Promise.allSettled(targets.map(async (account) => {
+        const result = await getChatConversations(account.accountId);
+        return [account.accountId, result.conversations || []] as const;
+      }));
+      if (requestId !== conversationsRequestRef.current) return;
+      const successful = results.filter((result): result is PromiseFulfilledResult<readonly [string, ChatConversation[]]> => result.status === 'fulfilled');
+      setConversationsByAccount((current) => {
+        const next = { ...current };
+        successful.forEach(({ value: [accountId, incoming] }) => {
+          next[accountId] = incoming.map((conversation) => {
+            const previous = (current[accountId] || []).find((item) => item.cid === conversation.cid
+              && item.otherUserId === conversation.otherUserId);
+            const enriched = !conversation.otherUserName && previous?.otherUserName
+              ? { ...conversation, otherUserName: previous.otherUserName } : conversation;
+            const isOpen = isActive && activeAccountId === accountId && activeCid === conversation.cid
+              && (mobilePane === 'chat' || window.matchMedia('(min-width: 1024px)').matches);
+            const watermark = readWatermarksRef.current[readWatermarkKey(accountId, conversation.cid)];
+            if (isOpen) rememberConversationRead(accountId, enriched);
+            return isOpen || isCoveredByReadWatermark(watermark, enriched)
+              ? { ...enriched, unreadCount: 0 } : enriched;
+          });
+        });
         return next;
       });
-    } catch (error) {
-      if (!silent) notify(`加载会话失败：${(error as Error).message}`, 'error');
+      if (!silent && successful.length < results.length) {
+        notify(successful.length ? '部分账号的会话暂时无法加载，已保留其他账号结果' : '会话暂时无法加载，请稍后重试', 'error');
+      }
     } finally {
-      if (!silent) setConversationsLoading(false);
+      if (!silent && requestId === conversationsRequestRef.current) setConversationsLoading(false);
     }
   };
 
@@ -431,6 +440,17 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
       if (destinationRef.current !== `${activeAccountId}:${activeCid}` || requestId !== messagesRequestRef.current) return;
       messagesDestinationRef.current = `${activeAccountId}:${activeCid}`;
       setMessages(result.messages || []);
+      const visibleName = result.messages.find((message) => !message.isSelf
+        && message.senderId === activeConversation?.otherUserId && message.senderName)?.senderName;
+      if (visibleName) {
+        setConversationsByAccount((current) => ({
+          ...current,
+          [activeAccountId]: (current[activeAccountId] || []).map((conversation) => (
+            conversation.cid === activeCid && conversation.otherUserId === activeConversation?.otherUserId
+              ? { ...conversation, otherUserName: visibleName } : conversation
+          )),
+        }));
+      }
       const target = notificationChatRef.current;
       if (target?.accountId === activeAccountId && target.conversation.cid === activeCid) {
         const name = result.messages.find((message) => !message.isSelf
@@ -475,18 +495,23 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
       const itemsRequest = getItems()
         .then(setItems)
         .catch((error) => notify(`加载商品资料失败：${(error as Error).message}`, 'error'));
-      await Promise.all([loadAccounts(), detailsRequest, itemsRequest, loadFilters()]);
+      const [chatAccounts] = await Promise.all([loadAccounts(), detailsRequest, itemsRequest, loadFilters()]);
+      if (isActive) await loadConversations(false, chatAccounts);
     };
     void initialize();
   }, []);
 
   useEffect(() => {
-    activeCidRef.current = '';
-    setActiveCid('');
+    if (!isActive) return;
+    const selectedExists = allConversations.some((conversation) => (
+      conversation.accountId === activeAccountId && conversation.cid === activeCid
+    ));
+    if (selectedExists) return;
+    const first = allConversations[0];
+    setActiveAccountId(first?.accountId || '');
+    setActiveCid(first?.cid || '');
     setMessages([]);
-    setMobilePane('list');
-    if (isActive) void loadConversations();
-  }, [isActive, activeAccountId]);
+  }, [isActive, accountFilterId, allConversations, activeAccountId, activeCid]);
 
   useEffect(() => {
     if (!isActive || accountsLoading || !navigation || handledNavigation.current === navigation.id) return;
@@ -500,39 +525,36 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
       notify('这条通知对应的账号已不可用，请在消息中心查看', 'error');
       return;
     }
-    if (activeAccountId !== navigation.account_id) {
-      setActiveAccountId(navigation.account_id);
-      return;
-    }
+    if (accountFilterId !== ALL_ACCOUNTS) setAccountFilterId(ALL_ACCOUNTS);
     // A valid clicked chat may be outside the platform's first page. Keep it
     // reachable and load its history directly, never fall back to another buyer.
     const conversation: ChatConversation = {
       cid: navigation.chat_id, rawCid: navigation.chat_id, otherUserId: navigation.buyer_id,
       otherUserName: navigation.buyer_name || '', lastMessageSummary: '从通知打开的会话', lastMessageTime: 0, unreadCount: 0,
     };
-    const target = { accountId: activeAccountId, conversation };
+    const target = { accountId: navigation.account_id, conversation };
     notificationChatRef.current = target;
     setNotificationChat(target);
-    activeCidRef.current = navigation.chat_id;
+    setActiveAccountId(navigation.account_id);
     setActiveCid(navigation.chat_id);
     setMessages([]);
     setQuery('');
     setMobilePane('chat');
     handledNavigation.current = navigation.id;
-  }, [navigation, isActive, accountsLoading, accounts, activeAccountId]);
+  }, [navigation, isActive, accountsLoading, accounts, accountFilterId]);
 
   useEffect(() => {
     if (isActive) void loadMessages();
   }, [isActive, activeAccountId, activeCid]);
 
   useEffect(() => {
-    if (!isActive || view !== 'messages' || !activeAccountId) return undefined;
+    if (!isActive || view !== 'messages' || !accounts.length) return undefined;
     void loadConversations(true);
     // 10 秒一轮。原来 3 秒刷一次，每条请求都要经 WebSocket 转发到闲鱼，
     // 多开几个标签页就会把账号打到 429（flow controled），表现为消息加载失败。
     const timer = window.setInterval(() => void loadConversations(true), CONVERSATION_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [isActive, view, activeAccountId, mobilePane]);
+  }, [isActive, view, accountFilterId, accounts, mobilePane]);
 
   useEffect(() => {
     if (!isActive || view !== 'messages' || !activeAccountId || !activeCid) return undefined;
@@ -717,12 +739,18 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
       <aside className={`${mobilePane === 'chat' ? 'hidden lg:flex' : 'flex'} min-h-0 flex-col border-b border-[var(--border)] lg:border-b-0 lg:border-r`}>
         <div className="flex h-[68px] shrink-0 items-center gap-3 border-b border-[var(--border)] px-4">
           <select
-            value={activeAccountId}
-            onChange={(event) => setActiveAccountId(event.target.value)}
+            value={accountFilterId}
+            onChange={(event) => {
+              setAccountFilterId(event.target.value);
+              setMobilePane('list');
+            }}
             aria-label="消息账号"
             className="h-10 min-w-0 flex-1 rounded-md border border-[var(--border-strong)] bg-[var(--surface)] px-3 text-sm font-bold text-[var(--text)] outline-none focus:border-[var(--brand)]"
           >
-            {accounts.length === 0 && <option value="">暂无账号</option>}
+            {accounts.length === 0 && <option value={ALL_ACCOUNTS}>暂无账号</option>}
+            {accounts.length > 0 && (
+              <option value={ALL_ACCOUNTS}>全部账号 · {accounts.filter((account) => account.connected).length} 个在线</option>
+            )}
             {accounts.map((account) => (
               <option key={account.accountId} value={account.accountId}>
                 {account.connected ? '在线' : '离线'} · {accountName(account)}
@@ -732,7 +760,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
           </select>
           <button
             type="button"
-            onClick={() => void Promise.all([loadAccounts(), loadConversations()])}
+            onClick={() => void loadAccounts().then((data) => loadConversations(false, data))}
             title="刷新账号和会话"
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full hover:bg-[var(--surface-hover)]"
           >
@@ -790,20 +818,27 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           {handoffLoadError && <p role="status" className="px-4 py-2 text-xs text-red-600">待人工状态暂时无法刷新，请稍后重试；自动回复不会因此恢复。</p>}
-          {accountHandoffs.length > 0 && <p className="px-4 py-2 text-xs font-bold text-red-600">待人工处理 {accountHandoffs.length} 个会话 · 已暂停自动回复</p>}
-          {conversationsLoading && conversations.length === 0 && (
+          {handoffs.filter((entry) => listedAccountIds.includes(entry.cookie_id)).length > 0 && (
+            <p className="px-4 py-2 text-xs font-bold text-red-600">
+              待人工处理 {handoffs.filter((entry) => listedAccountIds.includes(entry.cookie_id)).length} 个会话 · 已暂停自动回复
+            </p>
+          )}
+          {conversationsLoading && allConversations.length === 0 && (
             <div className="flex justify-center py-16">
               <Loader2 className="h-6 w-6 animate-spin text-[#d6b600]" />
             </div>
           )}
           {visibleConversations.map((conversation) => {
-            const selected = conversation.cid === activeCid;
+            const selected = conversation.accountId === activeAccountId && conversation.cid === activeCid;
             const title = conversation.otherUserName || `闲鱼用户 ${conversation.otherUserId}`;
+            const conversationAccount = accounts.find((account) => account.accountId === conversation.accountId);
             return (
               <button
-                key={conversation.cid}
+                key={`${conversation.accountId}:${conversation.cid}`}
                 type="button"
                 onClick={() => openConversation(conversation)}
+                data-account-id={conversation.accountId}
+                data-conversation-id={conversation.cid}
                 className={`grid w-full grid-cols-[48px_minmax(0,1fr)_auto] gap-3 px-4 py-3 text-left ${
                   selected ? 'bg-[var(--surface-strong)]' : 'hover:bg-[var(--surface-hover)]'
                 }`}
@@ -812,7 +847,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="truncate text-sm font-bold text-[var(--text)]">{title}</p>
-                    {accountHandoffs.some((entry) => entry.chat_id === conversation.cid) && (
+                    {handoffs.some((entry) => entry.cookie_id === conversation.accountId && entry.chat_id === conversation.cid) && (
                       <span className="shrink-0 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-bold text-red-700">待人工</span>
                     )}
                     {conversation.unreadCount > 0 && (
@@ -824,9 +859,16 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
                   <p className="mt-1 truncate text-xs text-[var(--text-muted)]">
                     {conversation.lastMessageSummary || '暂无消息'}
                   </p>
-                  <p className="mt-1 truncate text-[10px] text-[var(--text-soft)]">
-                    {conversation.itemTitle || (conversation.itemId ? `商品 ${conversation.itemId}` : '普通会话')}
-                  </p>
+                  <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[10px] text-[var(--text-soft)]">
+                    {accountFilterId === ALL_ACCOUNTS && (
+                      <span className="max-w-[42%] shrink-0 truncate rounded-full bg-[var(--surface-strong)] px-1.5 py-0.5 font-bold text-[var(--text-muted)]">
+                        {accountName(conversationAccount)}
+                      </span>
+                    )}
+                    <span className="truncate">
+                      {conversation.itemTitle || (conversation.itemId ? `商品 ${conversation.itemId}` : '普通会话')}
+                    </span>
+                  </div>
                 </div>
                 <span className="pt-0.5 text-[10px] text-[var(--text-soft)]">
                   {formatTimestamp(conversation.lastMessageTime)}
@@ -838,7 +880,9 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
             <div className="px-6 py-20 text-center">
               <Inbox className="mx-auto h-9 w-9 text-[var(--text-soft)]" />
               <p className="mt-3 text-sm text-[var(--text-muted)]">
-                {activeAccount?.connected ? '暂无会话' : '账号离线，无法读取会话'}
+                {accountFilterId === ALL_ACCOUNTS
+                  ? accounts.some((account) => account.connected) ? '暂无会话' : '没有在线账号，无法读取会话'
+                  : activeAccount?.connected ? '暂无会话' : '账号离线，无法读取会话'}
               </p>
             </div>
           )}
@@ -1069,7 +1113,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
           <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
             <Inbox className="h-12 w-12 text-[var(--text-soft)]" />
             <p className="mt-4 text-sm font-bold text-[var(--text-muted)]">选择一条会话查看消息</p>
-            <p className="mt-1 text-xs text-[var(--text-soft)]">会话和聊天记录直接来自当前闲鱼账号</p>
+            <p className="mt-1 text-xs text-[var(--text-soft)]">默认汇总全部在线店铺；每条会话仍使用所属店铺账号</p>
           </div>
         )}
       </section>

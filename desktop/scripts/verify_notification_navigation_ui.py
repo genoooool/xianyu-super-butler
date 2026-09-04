@@ -29,7 +29,7 @@ def verify_navigation_ui(page, context, base, native, output_dir):
     page.route('**/chat/messages/*/*?*', messages)
     # The real native-only endpoint queues a generic click for the logged-in UI.
     assert context.request.post(base + '/desktop/notifications/activate', headers=native, data={'target': ''}).json()['queued']
-    expect(page.get_by_role('combobox', name='消息账号')).to_have_value('shop-a', timeout=20000)
+    expect(page.get_by_role('combobox', name='消息账号')).to_have_value('__all__', timeout=20000)
     expect(page.get_by_text('历史验证-shop-a-first', exact=True)).to_be_visible()
 
     # Specific IDs below are fixtures; account ownership is tested in Python.
@@ -38,7 +38,7 @@ def verify_navigation_ui(page, context, base, native, output_dir):
         route.fulfill(json={'navigation': pending.pop(0) if pending else None})
     page.route('**/desktop/notifications/activation', activation)
     pending.append(dict(id='click-b', account_id='shop-b', chat_id='outside-page', buyer_id='buyer-b', buyer_name='通知买家乙'))
-    expect(page.get_by_role('combobox', name='消息账号')).to_have_value('shop-b')
+    expect(page.get_by_role('combobox', name='消息账号')).to_have_value('__all__')
     expect(page.get_by_text('历史验证-shop-b-outside-page', exact=True)).to_be_visible()
     expect(page.get_by_role('heading', name='通知买家乙', exact=True)).to_be_visible()
     page.get_by_title('刷新账号和会话', exact=True).click()
@@ -46,7 +46,7 @@ def verify_navigation_ui(page, context, base, native, output_dir):
     page.screenshot(path=str(output_dir / 'notification-chat.png'), animations='disabled')
     # Identical cid in another shop must fetch that shop, never reuse old history.
     pending.append(dict(id='click-a', account_id='shop-a', chat_id='outside-page', buyer_id='buyer-a'))
-    expect(page.get_by_role('combobox', name='消息账号')).to_have_value('shop-a')
+    expect(page.get_by_role('combobox', name='消息账号')).to_have_value('__all__')
     expect(page.get_by_text('历史验证-shop-a-outside-page', exact=True)).to_be_visible()
     expect(page.get_by_role('heading', name='历史恢复买家甲', exact=True)).to_be_visible()
     expect(page.get_by_role('heading', name='通知买家乙', exact=True)).not_to_be_visible()

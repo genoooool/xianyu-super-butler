@@ -35,6 +35,13 @@ class XianyuImParserTests(unittest.TestCase):
                                     {'contentType': 1, 'text': {'text': '和消息一样'}})
             self.assertEqual(parse_conversation(raw, 'seller')['otherUserName'], '')
 
+    def test_negative_one_is_preserved_as_a_legacy_counterparty(self):
+        raw = self.conversation({'senderUserId': '-1', 'reminderTitle': ''})
+        raw['singleChatConversation']['pairFirst'] = '-1@goofish'
+        result = parse_conversation(raw, 'seller')
+        self.assertIsNotNone(result)
+        self.assertEqual(result['otherUserId'], '-1')
+
     def test_parse_conversation(self):
         payload = base64.b64encode(
             json.dumps({"contentType": 1, "text": {"text": "你好"}}).encode("utf-8")
