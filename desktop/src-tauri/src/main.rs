@@ -436,12 +436,34 @@ fn main() {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return;
     }
+    let context = tauri::generate_context!();
+    #[cfg(target_os = "windows")]
+    let mut context = context;
+    // Isolate the native WebView profile as well as the backend smoke data.
+    #[cfg(target_os = "windows")]
+    if std::env::args().any(|arg| arg == "--desktop-smoke") {
+        for window in &mut context.config_mut().app.windows {
+            window.create = false;
+        }
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup(start_backend)
-        .build(tauri::generate_context!())
+        .setup(|app| {
+            #[cfg(target_os = "windows")]
+            if std::env::args().any(|arg| arg == "--desktop-smoke") {
+                for config in app.config().app.windows.clone() {
+                    tauri::WebviewWindowBuilder::from_config(app, &config)?
+                        .data_directory(std::env::temp_dir().join(format!(
+                            "xianyu-webview-smoke-{}", Uuid::new_v4()
+                        )))
+                        .build()?;
+                }
+            }
+            start_backend(app)
+        })
+        .build(context)
         .expect("failed to build desktop application");
 
     app.run(|app_handle, event| match event {
