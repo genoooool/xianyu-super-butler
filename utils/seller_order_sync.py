@@ -2,12 +2,12 @@
 
 数据来源有两个，互为补充：
 
-- ``merchant.sold.get``：订单列表，字段最全（含成交额和收货信息），但服务端
-  只保留近期订单。实测账号在订单管理页也只显示这批，与接口返回一致。
+- ``merchant.sold.get``：普通列表只显示近期订单，按订单号精确查询还可返回
+  历史订单的当前交易状态、成交额和收货信息。
 - ``merchant.refund.list``：退款列表，能返回订单列表已经查不到的历史归档单，
   但没有收货信息，成交额只能按单价乘件数估算。
 
-订单列表的数据优先，退款列表只用来补全订单列表缺失的单。
+退款列表只提供历史订单号；退款类型/结果不能代替订单当前状态。
 """
 
 from typing import Any, Dict, Optional
@@ -27,7 +27,8 @@ from utils.xianyu_seller_api import (
 def _save_order(db_manager, cookie_id: str, parsed: Dict[str, Any]) -> bool:
     """把解析后的订单写入数据库。"""
     order_id = parsed.get("order_id")
-    if not order_id:
+    if not order_id or parsed.get("from_refund_list"):
+        # “已发货退款”是退款类型，不代表仍在退款；也不能假定卖家实收为零。
         return False
 
     saved = db_manager.insert_or_update_order(
@@ -36,7 +37,8 @@ def _save_order(db_manager, cookie_id: str, parsed: Dict[str, Any]) -> bool:
         buyer_id=parsed.get("buyer_id") or None,
         quantity=str(parsed.get("buy_num") or 1),
         amount=parsed.get("amount") or None,
-        order_status=normalize_order_status("", parsed.get("status_text")),
+        order_status=("refunding" if parsed.get("in_refund") is True
+                      else normalize_order_status("", parsed.get("status_text"))),
         cookie_id=cookie_id,
         created_at=parsed.get("created_at") or None,
         receiver_name=parsed.get("receiver_name") or None,
@@ -203,6 +205,7 @@ async def sync_account_orders(
         except SellerApiError as exc:
             logger.warning(f"【{cookie_id}】卖出订单拉取失败: {exc}")
             items = []
+            result["complete"] = False
 
         seen = set()
         for item in items:
@@ -215,8 +218,11 @@ async def sync_account_orders(
                 ok = _save_order(db_manager, cookie_id, parsed)
                 result["saved"] += 1 if ok else 0
                 result["failed"] += 0 if ok else 1
+                if not ok:
+                    result["complete"] = False
             except Exception as e:
                 result["failed"] += 1
+                result["complete"] = False
                 logger.error(f"【{cookie_id}】保存卖出订单失败 {order_id}: {e}")
 
         result["total"] = len(seen)
@@ -235,29 +241,71 @@ async def sync_account_orders(
             except SellerApiError as exc:
                 logger.warning(f"【{cookie_id}】退款单拉取失败: {exc}")
                 refunds = []
+                result["complete"] = False
 
+            history_ids = []
             for item in refunds:
                 parsed = parse_refund_order(item)
                 order_id = parsed.get("order_id")
                 if not order_id or order_id in seen:
                     continue
                 seen.add(order_id)
+                history_ids.append(order_id)
+
+            # 批量精确查询，不为每一单启动浏览器，不根据退款申请推断交易状态。
+            # 精确查询的 totalCount/nextPage 不可靠，以请求 ID 是否全部返回为准。
+            for offset in range(0, len(history_ids), 50):
+                requested = history_ids[offset:offset + 50]
                 try:
-                    ok = _save_order(db_manager, cookie_id, parsed)
-                    if ok:
-                        result["saved"] += 1
-                        result["from_refund"] += 1
-                    else:
+                    batch = await api.get_sold_orders(
+                        order_ids=",".join(requested), rows_per_page=50,
+                    )
+                    records = {}
+                    duplicates = set()
+                    for raw in batch.get("items") or []:
+                        parsed = parse_sold_order(raw)
+                        order_id = parsed.get("order_id")
+                        if order_id not in requested:
+                            continue
+                        if order_id in records:
+                            duplicates.add(order_id)
+                        records[order_id] = parsed
+                except Exception as exc:
+                    result["failed"] += len(requested)
+                    result["complete"] = False
+                    logger.warning(f"【{cookie_id}】历史订单状态查询失败，保留原记录: {type(exc).__name__}")
+                    # 避免超时/风控后继续请求更多批次。
+                    result["failed"] += len(history_ids) - offset - len(requested)
+                    break
+
+                for order_id in requested:
+                    parsed = records.get(order_id)
+                    if (not parsed or order_id in duplicates
+                            or not parsed.get("item_id") or not parsed.get("buyer_id")
+                            or normalize_order_status("", parsed.get("status_text")) == "unknown"):
                         result["failed"] += 1
-                except Exception as e:
-                    result["failed"] += 1
-                    logger.error(f"【{cookie_id}】保存历史退款单失败 {order_id}: {e}")
+                        result["complete"] = False
+                        logger.warning(f"【{cookie_id}】历史订单 {order_id} 状态未确认，保留原记录")
+                        continue
+                    try:
+                        ok = _save_order(db_manager, cookie_id, parsed)
+                        if ok:
+                            result["saved"] += 1
+                            result["from_refund"] += 1
+                        else:
+                            result["failed"] += 1
+                            result["complete"] = False
+                    except Exception as exc:
+                        result["failed"] += 1
+                        result["complete"] = False
+                        logger.error(f"【{cookie_id}】保存历史订单失败 {order_id}: {type(exc).__name__}")
 
             result["total"] = len(seen)
 
         # 接口会下发新的签名令牌，回传给调用方以便同步到账号会话
         result["cookies_str"] = api.cookies_str
     except Exception as e:
+        result["complete"] = False
         logger.error(f"【{cookie_id}】卖出订单同步异常: {e}")
     finally:
         await api.close()
@@ -266,6 +314,6 @@ async def sync_account_orders(
         f"【{cookie_id}】卖出订单同步完成: 共 {result['total']} 单"
         f"（其中退款历史补全 {result['from_refund']} 单），"
         f"成功 {result['saved']}，失败 {result['failed']}"
-        + ("" if result["complete"] else f"，⚠️ 少于服务端角标 {result['expected']}")
+        + ("" if result["complete"] else "，⚠️ 部分订单未完成核对")
     )
     return result

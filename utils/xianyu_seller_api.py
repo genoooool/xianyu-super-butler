@@ -738,14 +738,15 @@ def parse_sold_order(item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def parse_refund_order(item: Dict[str, Any]) -> Dict[str, Any]:
-    """把 refund.list 的单条退款单展开成落库用的扁平字段。
+    """展开退款历史，仅供找到订单号，不能直接作为订单快照落库。
 
     该接口用于补全 sold.get 已查不到的历史归档订单，字段比订单列表少：
 
     - 没有 ``totalPrice``，成交额只能按 ``auctionPrice × buyNum`` 估算，
       因此不含运费和优惠，与订单列表的真值可能有差异
     - 没有收货信息（``buyerInfoVO`` 只有 buyerId / userNick / userIcon）
-    - 没有 ``confirmFee``，这些单均已退款，卖家实收记为 0
+    - 没有 ``confirmFee``，退款可能关闭或仅退部分金额，不能推断卖家实收
+    - ``orderStatus`` 是退款类型，``refundStatus`` 是退款结果，都不是交易状态
     """
     common = item.get("commonData") or {}
     buyer = item.get("buyerInfoVO") or {}
@@ -778,13 +779,12 @@ def parse_refund_order(item: Dict[str, Any]) -> Dict[str, Any]:
         "auction_price": unit_price,
         "buy_num": buy_num,
         "refund_fee": _text(price.get("refundFee")),
-        # 已退款订单卖家实收为 0，避免被计入营收
-        "confirm_fee": "0.00",
+        "confirm_fee": "",
         "post_fee": "",
         "refund_id": _text(refund.get("refundId")),
         "refund_reason": _text(refund.get("reason")),
         "refund_status_desc": _text(refund.get("refundStatus")),
-        "in_refund": True,
+        "in_refund": None,
         "from_refund_list": True,
     }
 

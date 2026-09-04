@@ -1,6 +1,5 @@
 import unittest
 
-from utils.order_status_rules import normalize_order_status
 from utils.xianyu_seller_api import parse_refund_order
 
 
@@ -41,13 +40,13 @@ class ParseRefundOrderTests(unittest.TestCase):
         self.assertEqual(parsed["auction_price"], "3.00")
         self.assertEqual(parsed["buy_num"], 50)
 
-    def test_confirm_fee_is_zero_so_refunds_never_count_as_revenue(self):
-        """退款单的卖家实收必须为 0，否则会被计入营收。"""
+    def test_refund_history_does_not_invent_revenue_or_active_refund(self):
+        """退款历史可能包含撤销或部分退款，不能假定实收为零/仍在退款。"""
         parsed = parse_refund_order(self._item())
 
-        self.assertEqual(parsed["confirm_fee"], "0.00")
+        self.assertEqual(parsed["confirm_fee"], "")
         self.assertEqual(parsed["refund_fee"], "80.00")
-        self.assertTrue(parsed["in_refund"])
+        self.assertIsNone(parsed["in_refund"])
 
     def test_numeric_ids_are_converted_to_string(self):
         parsed = parse_refund_order(self._item())
@@ -63,14 +62,14 @@ class ParseRefundOrderTests(unittest.TestCase):
         for key in ("receiver_name", "receiver_phone", "receiver_address"):
             self.assertNotIn(key, parsed)
 
-    def test_refund_status_never_maps_to_valid_order_status(self):
-        """所有退款状态文案都必须归一化为 refunding，不能落进计入营收的状态。"""
-        revenue_statuses = {"pending_ship", "shipped", "completed"}
+    def test_refund_types_cannot_be_saved_as_trade_status(self):
+        from unittest.mock import Mock
+        from utils.seller_order_sync import _save_order
+        db = Mock()
         for text in ("未发货退款", "已发货退款", "退货退款"):
             parsed = parse_refund_order(self._item(commonData={"orderStatus": text}))
-            status = normalize_order_status("", parsed["status_text"])
-            self.assertEqual(status, "refunding", f"状态 {text} 归一化错误")
-            self.assertNotIn(status, revenue_statuses)
+            self.assertFalse(_save_order(db, 'shop', parsed))
+        db.insert_or_update_order.assert_not_called()
 
     def test_missing_price_does_not_raise(self):
         parsed = parse_refund_order({"commonData": {"orderId": 1}})
