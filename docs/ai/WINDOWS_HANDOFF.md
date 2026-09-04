@@ -2,27 +2,28 @@
 
 ## 当前状态
 
-本分支已修复 Windows 上的四个桌面差异，并在默认主机“小呆电脑”
-`DESKTOP-RMIV2F3` 完成源码、原生编译、冻结后端和离线 UI 验证：
+Windows修复已由根任务整合到8642dec，并在默认主机“小呆电脑”
+`DESKTOP-RMIV2F3` 完成原生构建、覆盖安装、真实桌面启动和离线 UI 验证：
 
 1. Windows 通知点击保留原通知的账号与会话目标，交回后端做登录账号归属校验，再打开对应会话。
 2. 登录页支持“记住账号和密码”，只使用当前 Windows 用户的 Credential Manager，没有明文回退。
 3. 回到消息中心时重新读取快捷短语；自动发货和固定回复继续在每次执行时读取数据库，并保留账号/商品隔离。
 4. Windows 后端从 PyInstaller 单文件改为目录式资源，避免每次启动先解压完整运行时。
 
-本轮没有生成最终 Tauri/NSIS 安装包，也没有安装或发布。备用电脑上已有的
-`dist/windows-20260905-installer-b790/returned/xianyu-workbench_1.0.1_x64-setup.exe`
-不包含本轮修复，只保留为旧基线，不能作为当前交付件。
+已从1.0.1升级到1.0.2，安装位置`D:\闲鱼工作台`，当前程序保持退出。最终安装包为
+`dist/windows-final-1.0.2-20260905-0445/returned/闲鱼工作台_1.0.2_x64-setup.exe`，
+SHA256 `8c182ef4146051202af91bc81a8a1254cfeeac551f7c02e6e195f081dbf62966`；未发布。
 
 ## 工作副本和验证输入
 
 - 工作副本：`/Users/geno/Documents/xianyu app/xianyu-windows-20260905`
 - 分支：`codex/windows-desktop-20260905`
-- 本轮起点：`13abd3031e3be9c547eb3915cd10139cd648a57f`
+- Windows修复提交：`6495bfd24e3979f3403b8dbec803c02b09a4f1af`
+- 最终根提交：`8642decec8e6cab91c14b7a65986c7d50727ac89`
 - Windows 主机：小呆电脑 `DESKTOP-RMIV2F3` / `Administrator`
-- 隔离运行根：`C:\Users\Administrator\codex-builds\xianyu-workbench\windows-fixes-20260905-0415`
-- 源码快照：328 个非忽略文件，SHA256
-  `ff89a13c474e5307919a8c08c9162c364898d949f4c143da74f7ee7718c173c3`
+- 最终隔离运行根：`C:\Users\Administrator\codex-builds\xianyu-workbench\wf102-0445`
+- 最终源码快照：329 个受控文件，SHA256
+  `acbf8c781e4c6ef1c6f39797ff8cf1692fd8b5d77fc9017fd7a1b27e829c52c9`
 - Rust 通知测试串行修复后单独同步的文件 SHA256：
   `78c47d031914b7fc7b0802fbfafb98ce8e530b6787c65ab9df08c8399adc6d24`
 - 最终 UI 验收脚本单独同步的文件 SHA256：
@@ -76,6 +77,10 @@
 | Windows 离线 UI | 通知目标跨店隔离、会话恢复、快捷短语切回即刷新、订单买家名与 ID 均通过；无页面脚本错误 |
 | 启动到健康可用，旧 onefile | 5 轮平均 4.504 秒，范围 4.495–4.527 秒 |
 | 启动到健康可用，新 onedir | 5 轮平均 2.257 秒，范围 2.237–2.267 秒；约减少 49.9% |
+| 最终NSIS | 1.0.2，309,650,690字节，SHA256 `8c182ef4…dbf62966`；Authenticode未签名 |
+| 覆盖安装 | 原D盘路径1.0.1→1.0.2；程序/数据双备份通过；注册表和主程序版本一致 |
+| 安装版交互桌面 | 后端1.58秒就绪；记住登录复选框可见；凭据元数据未变；退出无残留进程 |
+| 最终真实数据 | 结构、37张表内容、配置与安装前一致；买家消息0，经营动作0 |
 
 离线 UI 截图已取回到
 `dist/windows-fixes-20260905-0415/returned-ui/`，Windows 与 Mac 的 SHA256 相符。
@@ -89,12 +94,10 @@
 - 已安装与项目 Playwright 1.60.0 匹配的 Chromium/Headless Shell 1223，位置为工具链内的 `playwright` 目录。
 - `activate-toolchain.ps1` 只修改当前 PowerShell 进程，不修改系统 PATH。
 
-## 尚未完成的真实桌面边界
+## 安装结果、备份与剩余边界
 
-- 尚未在真正弹出的 Windows 通知横幅上进行鼠标点击。通知响应队列和后端/前端导航两段已分别原生编译与离线验证，最终安装件仍需点一次真实通知确认系统激活行为。
-- 尚未构建或安装包含本轮修复的 NSIS 包，因此也未验证安装后资源路径、托盘操作、覆盖安装和卸载。
-- 没有登录真实闲鱼账号、发送消息、执行订单或发卡，也没有接触正式数据。
-- `verify_notification_ui.py` 的完整跨平台脚本仍包含 macOS 专属提示音断言；Windows 本轮使用针对四项问题的离线 UI 验收入口。
-- 当前安装链仍未配置 Authenticode 签名；本轮没有推送或发布。
-
-后续若获准最终打包，应以本轮提交重新建立干净快照，在小呆电脑生成 NSIS，先做隔离安装，随后在可操作桌面上完成通知点击、记住登录、快捷短语/自动发货热更新、启动速度和托盘退出的人工验收。
+- 程序备份：`D:\codex-backups\xianyu-workbench-before-1.0.2-20260905-0525`；数据备份：`C:\Users\Administrator\codex-builds\xianyu-workbench\wf102-0445\backup-before-install-20260905-0525`。完整结果在本机`dist/windows-final-1.0.2-20260905-0445/returned/FINAL_RESULT.json`。
+- 安装版交互启动会按既有逻辑刷新`cookies.value`并推进`sqlite_sequence`。验收已保留启动后数据库副本，再从受检安装前备份恢复并逐表确认；以后用户正常启动仍可能再次刷新。
+- 仍未在真正弹出的Windows通知横幅上鼠标点击。通知响应队列、后端归属校验和前端精确跳转已分别原生/离线验证，下一条真实新消息由用户实点即可。
+- 没有登录、保存测试凭据、发送消息、执行订单/发卡或改变经营配置。离线UI外网完成请求为0；真实桌面启动没有做全网监控，因此不声称其完全无网络请求。
+- 当前安装链仍未配置Authenticode签名，手动安装可能显示未知发布者；没有推送或发布Release。
