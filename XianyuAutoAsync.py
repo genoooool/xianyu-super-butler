@@ -337,6 +337,7 @@ class XianyuLive:
 
     async def _cancel_background_tasks(self):
         """取消并清理所有后台任务（保留此方法用于程序退出时的完整清理）"""
+        await self._cancel_order_status_refreshes()
         try:
             tasks_to_cancel = []
             
@@ -812,6 +813,8 @@ class XianyuLive:
 
         # 交易卡片落库前暂存卖家端接口返回的真实成交数据（金额、数量、收货信息）
         self._pending_order_real_values = {}
+        self._order_status_started_ms = int(time.time() * 1000)
+        self._recent_order_status_tasks = {}
 
         self.session = None  # 用于API调用的aiohttp session
 
@@ -1600,7 +1603,7 @@ class XianyuLive:
     ) -> bool:
         """订单详情暂不可用时，先保存交易卡片中可信的基础信息。"""
         order_status = self._extract_order_event_status(message)
-        if not order_id or not order_status:
+        if not order_id:
             return False
 
         try:
@@ -1639,6 +1642,10 @@ class XianyuLive:
                 logger.info(f"【{self.cookie_id}】跳过未确认卖家归属的订单快照: {order_id}")
                 return False
             if real_values:
+                from utils.order_status_rules import normalize_order_status
+                verified_status = normalize_order_status('', real_values.get('status_text'))
+                if verified_status != 'unknown':
+                    order_status = verified_status
                 # 推送发送人未必是买家，已验证的卖出记录优先。
                 item_id = real_values.get('item_id') or item_id
                 buyer_id = real_values.get('buyer_id') or buyer_id
@@ -1651,6 +1658,9 @@ class XianyuLive:
                 receiver_name = real_values.get("receiver_name") or None
                 receiver_phone = real_values.get("receiver_phone") or None
                 receiver_address = real_values.get("receiver_address") or None
+
+            if not order_status:
+                return False
 
             existing_order = db_manager.get_order_by_id(order_id)
             snapshot_item_id = item_id
@@ -1680,6 +1690,7 @@ class XianyuLive:
                 receiver_name=receiver_name,
                 receiver_phone=receiver_phone,
                 receiver_address=receiver_address,
+                preserve_status_progress=True,
             )
             if saved:
                 source = "卖家端接口" if real_values else "交易卡片"
@@ -1731,6 +1742,135 @@ class XianyuLive:
                 f"【{self.cookie_id}】获取订单真实成交数据异常 {order_id}: {self._safe_str(e)}"
             )
             return {}
+
+    def _order_status_requests_allowed(self) -> bool:
+        from app.cookie_manager import manager as cookie_manager
+        from utils import risk_control
+        return bool(self.cookies_str) and not (
+            cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id)
+        ) and not risk_control.registry.get(self.cookie_id).is_blocked
+
+    async def _refresh_order_payment_status(self, order_id: str) -> str:
+        """Read a fresh, exact seller record; never infer payment from amount/cache."""
+        from app.db_manager import db_manager
+        from utils.order_status_rules import normalize_order_status
+
+        try:
+            if not self._order_status_requests_allowed():
+                return 'unknown'
+            record = await asyncio.wait_for(self.fetch_order_real_values(order_id), timeout=10)
+            if not self._order_status_requests_allowed():
+                return 'unknown'
+            if not record or str(record.get('order_id')) != str(order_id):
+                return 'unknown'
+            if not self._can_manage_seller_order(order_id, record.get('item_id'), record):
+                return 'unknown'
+            existing = db_manager.get_order_by_id(order_id)
+            if existing and existing.get('buyer_id') and str(existing['buyer_id']) != str(record.get('buyer_id')):
+                return 'unknown'
+            status = normalize_order_status('', record.get('status_text'))
+            if status == 'unknown':
+                return status
+            saved = db_manager.insert_or_update_order(
+                order_id=order_id, cookie_id=self.cookie_id,
+                item_id=record.get('item_id') or None, buyer_id=record.get('buyer_id') or None,
+                order_status=status, preserve_status_progress=True,
+            )
+            if not saved:
+                return 'unknown'
+            stored = db_manager.get_order_by_id(order_id) or {}
+            if str(stored.get('cookie_id')) != str(self.cookie_id):
+                return 'unknown'
+            # A concurrent shipped/closed/refund observation wins over this query.
+            if stored.get('order_status') in {'shipped', 'completed', 'cancelled', 'refunding'}:
+                status = stored['order_status']
+            logger.info(f"【{self.cookie_id}】订单付款状态复查: order_id={order_id}, status={status}")
+            return status
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"【{self.cookie_id}】订单付款状态复查失败 {order_id}: {type(exc).__name__}")
+            return 'unknown'
+
+    async def _confirm_order_payment(self, order_id: str) -> bool:
+        """Only retry reads before delivery; never retry card transmission."""
+        from app.db_manager import db_manager
+        for delay in (0, 2, 5):
+            if delay:
+                await asyncio.sleep(delay)
+            current = db_manager.get_order_by_id(order_id) or {}
+            if str(current.get('cookie_id')) != str(self.cookie_id):
+                return False
+            if current.get('order_status') in {'shipped', 'completed', 'cancelled', 'refunding'}:
+                return False
+            if not self._order_status_requests_allowed():
+                return False
+            status = await self._refresh_order_payment_status(order_id)
+            if status == 'pending_ship':
+                return True
+            if status not in {'unknown', 'processing'}:
+                return False
+        return False
+
+    def _schedule_recent_order_status_refresh(self, order_id: str, message: dict):
+        """Bounded status-only reconciliation for new live events, not old orders."""
+        from app.db_manager import db_manager
+        try:
+            stamp = int(message.get('1', {}).get('5', 0))
+            now = time.time()
+            if stamp < getattr(self, '_order_status_started_ms', now * 1000) or not 0 <= now * 1000 - stamp <= 300000:
+                return
+            current = db_manager.get_order_by_id(order_id) or {}
+            if str(current.get('cookie_id')) != str(self.cookie_id):
+                return
+            if current.get('order_status') not in {'processing', 'unknown'}:
+                return
+            jobs = self._recent_order_status_tasks
+            for key, (started, task) in list(jobs.items()):
+                if task.done() and now - started > 300:
+                    jobs.pop(key)
+            if order_id in jobs or len(jobs) >= 128:
+                return
+            task = self._create_tracked_task(self._poll_recent_order_status(order_id))
+            jobs[order_id] = (now, task)
+        except (TypeError, ValueError, AttributeError):
+            return
+
+    async def _poll_recent_order_status(self, order_id: str):
+        from app.db_manager import db_manager
+
+        async def poll():
+            for delay in (2, 5, 10, 20, 30):
+                await asyncio.sleep(delay)
+                current = db_manager.get_order_by_id(order_id) or {}
+                if str(current.get('cookie_id')) != str(self.cookie_id):
+                    return
+                if current.get('order_status') not in {'processing', 'unknown'}:
+                    return
+                if not self._order_status_requests_allowed():
+                    return
+                status = await self._refresh_order_payment_status(order_id)
+                if status not in {'processing', 'unknown'}:
+                    return
+            logger.info(f"【{self.cookie_id}】新订单状态复查结束，暂未确认付款: {order_id}")
+
+        try:
+            await asyncio.wait_for(poll(), timeout=90)
+        except asyncio.TimeoutError:
+            logger.warning(f"【{self.cookie_id}】新订单状态复查超时，未执行发货: {order_id}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"【{self.cookie_id}】新订单状态复查停止 {order_id}: {type(exc).__name__}")
+
+    async def _cancel_order_status_refreshes(self):
+        tasks = [task for _, task in getattr(self, '_recent_order_status_tasks', {}).values()
+                 if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._recent_order_status_tasks = {}
 
     async def sync_sold_orders(self, days: int = 7, query_code: str = "ALL") -> dict:
         """全量同步卖出订单，作为消息驱动的兜底对账。
@@ -1794,21 +1934,11 @@ class XianyuLive:
                     logger.error(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 买家归属不一致，拒绝自动发货')
                     return
 
-            order_status = (current_order or {}).get('order_status')
             order_detail = None
-            if order_status != 'pending_ship':
-                logger.info(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 本地状态为 {order_status or "未记录"}，拉取详情确认付款状态')
-                order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id)
-                if order_detail:
-                    order_status = order_detail.get('order_status')
-                if not order_status or order_status == 'unknown':
-                    refreshed_order = db_manager.get_order_by_id(order_id)
-                    order_status = (refreshed_order or {}).get('order_status')
-
-            if order_status != 'pending_ship':
+            if not await self._confirm_order_payment(order_id):
                 logger.warning(
                     f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 未确认处于待发货状态'
-                    f'（当前: {order_status or "unknown"}），跳过自动发货'
+                    f'，跳过自动发货'
                 )
                 return
 
@@ -1845,6 +1975,11 @@ class XianyuLive:
                 # 第四重检查：获取锁后再次检查冷却状态
                 if not self.can_auto_delivery(order_id):
                     logger.info(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 在获取锁后检查发现仍在冷却期，跳过发货')
+                    return
+
+                latest_order = db_manager.get_order_by_id(order_id) or {}
+                if (str(latest_order.get('cookie_id')) != str(self.cookie_id)
+                        or latest_order.get('order_status') != 'pending_ship'):
                     return
 
                 protection_result = await self.apply_delivery_block_rules(
@@ -5826,8 +5961,7 @@ class XianyuLive:
                 cookie_string = self.cookies_str
                 logger.warning(f"【{self.cookie_id}】使用Cookie长度: {len(cookie_string) if cookie_string else 0}")
 
-                # 优先走卖家端接口直连：一次两个 HTTP 请求即可拿到成交额、规格和
-                # 收货信息，无需启动浏览器。缺规格时说明接口没覆盖，再回退抓页面。
+                # 付款状态和 SKU 是独立信息，不能因为没有规格就丢掉新状态。
                 result = None
                 direct = None
                 try:
@@ -5836,13 +5970,9 @@ class XianyuLive:
                     direct = await fetch_order_detail_direct(
                         self.cookie_id, cookie_string, order_id
                     )
-                    if direct and direct.get('spec_value'):
+                    if direct and (direct.get('spec_value') or direct.get('seller_verified') is True):
                         result = direct
                         logger.info(f"【{self.cookie_id}】订单详情已通过卖家端接口获取: {order_id}")
-                    elif direct:
-                        logger.info(
-                            f"【{self.cookie_id}】卖家端接口未返回规格，回退浏览器抓取: {order_id}"
-                        )
                 except Exception as exc:
                     logger.warning(
                         f"【{self.cookie_id}】卖家端接口获取订单详情失败，回退浏览器: "
@@ -5860,16 +5990,31 @@ class XianyuLive:
                     item_id = existing.get('item_id') or item_id
                     buyer_id = existing.get('buyer_id') or buyer_id
 
-                if not result:
+                needs_spec = False
+                if seller_record and not seller_record.get('spec_value') and item_id:
+                    delivery_config = db_manager.get_item_delivery_config(self.cookie_id, item_id) or {}
+                    needs_spec = (bool(delivery_config.get('is_multi_spec'))
+                                  or db_manager.get_item_multi_spec_status(self.cookie_id, item_id))
+                if not result or needs_spec:
                     # 确定是否使用有头模式（调试用）
                     headless_mode = True if debug_headless is None else debug_headless
                     if not headless_mode:
                         logger.info(f"【{self.cookie_id}】🖥️ 启用有头模式进行调试")
 
                     # 异步获取订单详情（使用当前账号的cookie）
-                    result = await fetch_order_detail_simple(
-                        order_id, cookie_string, headless=headless_mode, cookie_id=self.cookie_id
+                    supplement = await fetch_order_detail_simple(
+                        order_id, cookie_string, headless=headless_mode, cookie_id=self.cookie_id,
+                        force_refresh=True,
                     )
+                    if seller_record:
+                        # 浏览器只补规格；成交状态、金额等仍采用刚读取的卖家记录。
+                        result = dict(seller_record)
+                        for key in ('spec_name', 'spec_value', 'sku_info', 'spec_payload',
+                                    'spec_text', 'platform_sku_id'):
+                            if supplement and supplement.get(key):
+                                result[key] = supplement[key]
+                    else:
+                        result = supplement
 
                 if result:
                     logger.info(f"【{self.cookie_id}】订单详情获取成功: {order_id}")
@@ -5935,7 +6080,8 @@ class XianyuLive:
                                 auction_price=result.get('auction_price') or None,
                                 confirm_fee=result.get('confirm_fee') or None,
                                 refund_fee=result.get('refund_fee') or None,
-                                post_fee=result.get('post_fee') or None
+                                post_fee=result.get('post_fee') or None,
+                                preserve_status_progress=True,
                             )
                             
                             # 使用订单状态处理器设置状态
@@ -10160,6 +10306,7 @@ class XianyuLive:
                             item_id=temp_item_id,
                             buyer_id=temp_user_id,
                         )
+                        self._schedule_recent_order_status_refresh(order_id, message)
 
                         # 检查是否已经在获取该订单详情
                         order_detail_lock = self._order_detail_locks[(self.cookie_id, order_id)]
@@ -10900,6 +11047,7 @@ class XianyuLive:
         finally:
             # 更新连接状态为已关闭
             self._set_connection_state(ConnectionState.CLOSED, "程序退出")
+            await self._cancel_order_status_refreshes()
             
             # 清空当前token
             if self.current_token:

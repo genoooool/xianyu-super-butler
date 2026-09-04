@@ -47,6 +47,7 @@ def _save_order(db_manager, cookie_id: str, parsed: Dict[str, Any]) -> bool:
         confirm_fee=parsed.get("confirm_fee") or None,
         refund_fee=parsed.get("refund_fee") or None,
         post_fee=parsed.get("post_fee") or None,
+        preserve_status_progress=True,
     )
 
 

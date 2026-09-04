@@ -229,7 +229,7 @@ class OrderDetailFetcher:
         except Exception as e:
             logger.error(f"设置Cookie失败: {e}")
 
-    async def fetch_order_detail(self, order_id: str, timeout: int = 30) -> Optional[Dict[str, Any]]:
+    async def fetch_order_detail(self, order_id: str, timeout: int = 30, *, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
         """
         获取订单详情（带锁机制和数据库缓存）
 
@@ -275,7 +275,8 @@ class OrderDetailFetcher:
                     receiver_address = existing_order.get('receiver_address', '')
 
                     # 只有金额有效时才使用缓存（不再检查收货人信息是否完整）
-                    if amount_valid:
+                    from utils.order_status_rules import is_stable_order_status
+                    if amount_valid and not force_refresh and is_stable_order_status(existing_order.get('order_status')):
                         logger.info(f"[CLIPBOARD] 订单 {order_id} 已存在于数据库中且金额有效({amount})，直接返回缓存数据")
                         print(f"[OK] 订单 {order_id} 使用缓存数据，跳过浏览器获取")
                         cached_spec = _cached_specification_fields(existing_order)
@@ -306,6 +307,7 @@ class OrderDetailFetcher:
                             'receiver_phone': receiver_phone,
                             'receiver_address': receiver_address,
                             'timestamp': time.time(),
+                            'order_status': existing_order.get('order_status', 'unknown'),
                             'from_cache': True  # 标记数据来源
                         }
                         return result
@@ -1091,7 +1093,7 @@ class OrderDetailFetcher:
 
 
 # 便捷函数
-async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, headless: bool = True, *, cookie_id: str = None) -> Optional[Dict[str, Any]]:
+async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, headless: bool = True, *, cookie_id: str = None, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
     """
     简单的订单详情获取函数（优化版：先检查数据库，再初始化浏览器）
 
@@ -1100,6 +1102,7 @@ async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, he
         cookie_string: Cookie字符串，如果不提供则使用默认值
         headless: 是否无头模式
         cookie_id: 当前卖家账号；未提供时禁用数据库缓存
+        force_refresh: 强制刷新（会传递到内部获取器）；变化中的订单不使用缓存
 
     Returns:
         订单详情字典，包含以下字段：
@@ -1140,8 +1143,9 @@ async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, he
             receiver_phone = existing_order.get('receiver_phone', '')
             receiver_address = existing_order.get('receiver_address', '')
 
-            # 只有金额有效时才使用缓存（不再检查收货人信息是否完整）
-            if amount_valid:
+            # 金额不能证明付款状态已确定；变化中的订单必须重新查询。
+            from utils.order_status_rules import is_stable_order_status
+            if amount_valid and not force_refresh and is_stable_order_status(existing_order.get('order_status')):
                 logger.info(f"[CLIPBOARD] 订单 {order_id} 已存在于数据库中且金额有效({amount})，直接返回缓存数据")
                 print(f"[OK] 订单 {order_id} 使用缓存数据（金额:{amount}）")
                 cached_spec = _cached_specification_fields(existing_order)
@@ -1186,7 +1190,7 @@ async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, he
     fetcher = OrderDetailFetcher(cookie_string, headless, cookie_id=cookie_id)
     try:
         if await fetcher.init_browser(headless=headless):
-            return await fetcher.fetch_order_detail(order_id)
+            return await fetcher.fetch_order_detail(order_id, force_refresh=force_refresh)
     finally:
         await fetcher.close()
     return None

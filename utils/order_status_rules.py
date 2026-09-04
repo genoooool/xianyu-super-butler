@@ -59,6 +59,9 @@ STATUS_TEXT_RULES = (
     ("交易成功", "completed"),
     ("订单完成", "completed"),
     ("交易完成", "completed"),
+    ("待付款", "processing"),
+    ("等待买家付款", "processing"),
+    ("买家未付款", "processing"),
     ("处理中", "processing"),
 )
 
@@ -91,3 +94,22 @@ def get_order_status(order: Any) -> str:
 
 def is_stable_order_status(status: Any) -> bool:
     return normalize_order_status(status) in STABLE_ORDER_STATUSES
+
+
+def preserve_order_status_progress(current: str, incoming: str) -> str:
+    """Prevent delayed automatic observations from reopening an advanced order.
+
+    Explicit/manual transitions (including refund cancellation) retain their own
+    validation; this guard is only for background snapshots and detail reads.
+    """
+    if current not in VALID_ORDER_STATUSES or current == "unknown":
+        return incoming
+    if incoming == "unknown" or current == "cancelled":
+        return current
+    if incoming == "processing" and current != "processing":
+        return current
+    if incoming == "pending_ship" and current in {"shipped", "completed", "refunding"}:
+        return current
+    if incoming == "shipped" and current == "completed":
+        return current
+    return incoming

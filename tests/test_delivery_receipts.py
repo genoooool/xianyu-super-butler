@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 METHODS = {
     '_handle_auto_delivery', 'can_auto_delivery', 'mark_delivery_sent',
     '_send_delivery_request', 'send_msg', 'send_image_msg', '_send_im_request',
-    '_resolve_im_response', '_fail_pending_im_requests', 'send_im_text',
+    '_resolve_im_response', '_fail_pending_im_requests', 'send_im_text', '_confirm_order_payment',
 }
 
 
@@ -118,6 +118,8 @@ class ReceiptFlowTests(unittest.IsolatedAsyncioTestCase):
         live._send_im_request = fast_request
         self.order = dict(order_id='order', cookie_id='seller', item_id='item', buyer_id='buyer',
                           chat_id='chat', order_status='pending_ship', system_shipped=False)
+        live._order_status_requests_allowed = lambda: True
+        live._refresh_order_payment_status = AsyncMock(return_value='pending_ship')
         self.db = SimpleNamespace(
             get_item_info=Mock(return_value={'item_id': 'item'}),
             get_order_by_id=Mock(side_effect=lambda _: dict(self.order)),
@@ -154,6 +156,22 @@ class ReceiptFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('order', self.live.delivery_blocked_orders)
         self.assertFalse(self.live.can_auto_delivery('order'))
         self.assertEqual(self.live._im_pending, {})
+
+    async def test_stale_paid_cache_and_failed_verification_never_acquire_card(self):
+        self.live._refresh_order_payment_status.return_value = 'unknown'
+        with patch('asyncio.sleep', AsyncMock()):
+            await self.automatic()
+        self.live._auto_delivery.assert_not_awaited()
+        self.live.auto_confirm.assert_not_awaited()
+        self.assertEqual(self.writes, [])
+        self.assertEqual(self.live._refresh_order_payment_status.await_count, 3)
+
+    async def test_fresh_closed_order_never_acquires_or_sends_card(self):
+        self.live._refresh_order_payment_status.return_value = 'cancelled'
+        await self.automatic()
+        self.live._auto_delivery.assert_not_awaited()
+        self.live.auto_confirm.assert_not_awaited()
+        self.assertEqual(self.writes, [])
 
     async def test_delayed_ack_is_required_before_platform_shipping(self):
         self.receipts = [None]

@@ -6228,7 +6228,8 @@ class DBManager:
                                system_shipped: bool = None, expected_version: int = None,
                                chat_id: str = None, buy_num: int = None,
                                auction_price: str = None, confirm_fee: str = None,
-                               refund_fee: str = None, post_fee: str = None):
+                               refund_fee: str = None, post_fee: str = None,
+                               preserve_status_progress: bool = False):
         """插入或更新订单信息"""
         with self.lock:
             try:
@@ -6243,7 +6244,7 @@ class DBManager:
                         return False
 
                 # 检查订单是否已存在
-                cursor.execute("SELECT order_id, cookie_id, item_id, buyer_id FROM orders WHERE order_id = ?", (order_id,))
+                cursor.execute("SELECT order_id, cookie_id, item_id, buyer_id, order_status FROM orders WHERE order_id = ?", (order_id,))
                 existing = cursor.fetchone()
 
                 # 同一平台订单只保存卖家视角。买家账号的推送/刷新不能抢占已有归属。
@@ -6272,6 +6273,9 @@ class DBManager:
                         return False
 
                 if existing:
+                    if preserve_status_progress and order_status is not None:
+                        from utils.order_status_rules import preserve_order_status_progress
+                        order_status = preserve_order_status_progress(existing[4], order_status)
                     # 更新现有订单
                     update_fields = []
                     update_values = []

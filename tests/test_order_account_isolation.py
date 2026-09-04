@@ -160,7 +160,7 @@ class OrderAccountIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handler.update_order_status('order', 'shipped', 'store'))
 
     async def test_both_cache_paths_reject_foreign_owner_and_allow_seller(self):
-        self.assertTrue(self.save(spec_name='规格', spec_value='教程'))
+        self.assertTrue(self.save(spec_name='规格', spec_value='教程', order_status='completed'))
         for cookie, expected in [('buyer-store', False), ('store', True)]:
             simple = await fetch_order_detail_simple('order', 'offline', cookie_id=cookie)
             fetcher = OrderDetailFetcher('offline', cookie_id=cookie)
@@ -249,7 +249,10 @@ class OrderAccountIsolationTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(error=error), patch('app.cookie_manager.manager', None):
                 with patch.object(self.db, 'insert_or_update_order', return_value=False, side_effect=error) as save:
                     await live.handle_message(envelope, SimpleNamespace(send=AsyncMock()))
-                    save.assert_called_once()
+                    # Verified generic cards now try a status snapshot first;
+                    # the bargain-specific write must still fail before shipping.
+                    self.assertEqual(save.call_count, 2)
+                    self.assertTrue(save.call_args.kwargs['is_bargain'])
                     self.assertTrue(save.call_args.kwargs['is_bargain'])
             live.auto_freeshipping.assert_not_awaited()
             live._handle_auto_delivery.assert_not_awaited()

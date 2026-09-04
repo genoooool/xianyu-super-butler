@@ -85,6 +85,7 @@ class OrderEventSnapshotTests(unittest.TestCase):
             receiver_name="买家",
             receiver_phone="13800000000",
             receiver_address="某省某市某区某路 1 号",
+            preserve_status_progress=True,
         )
         # 真值消费一次后应清空，避免同一订单的后续消息复用过期数据
         self.assertEqual(live._pending_order_real_values, {})
@@ -164,6 +165,7 @@ class OrderEventSnapshotTests(unittest.TestCase):
             receiver_name=None,
             receiver_phone=None,
             receiver_address=None,
+            preserve_status_progress=True,
         )
 
     def test_ignores_non_transaction_messages(self):
