@@ -523,11 +523,20 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
         image_ids: draftImages,
       });
       if (!result.success) throw new Error(result.message || '未确认发送结果');
+      if (result.data?.handoff_auto_resume === 'resumed') {
+        setHandoffs(entries => entries.filter(entry => !(entry.cookie_id === activeAccountId
+          && entry.chat_id === activeConversation.cid && entry.revision === result.data?.handoff_resumed_revision)));
+      }
       if (destinationRef.current === sendingTo) {
         setDraft(''); setDraftImages([]); setShowImagePicker(false);
         await Promise.all([loadMessages(true), loadConversations(true)]);
       }
-      notify('消息已发送', 'success');
+      const resumeStatus = result.data?.handoff_auto_resume;
+      if (resumeStatus === 'failed' || resumeStatus === 'changed') {
+        notify('消息已发送，自动回复状态未能确认恢复，请刷新检查；不要重复发送消息。', 'warning');
+      } else {
+        notify(resumeStatus === 'resumed' ? '消息已发送，已恢复此会话的自动回复' : '消息已发送', 'success');
+      }
     } catch (error) {
       notify(`发送未确认：${(error as Error).message}。请先检查原会话，避免重复发送。`, 'error');
     } finally {
@@ -777,7 +786,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
               <div role="status" className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] bg-[var(--surface-subtle)] px-5 py-3">
                 <div className="min-w-0 text-xs text-[var(--text-muted)]">
                   <span className="mr-2 inline-flex rounded-full bg-red-100 px-2 py-1 font-bold text-red-700">待人工处理</span>
-                  自动回复已暂停，重启后也不会自动恢复。
+                  自动回复已暂停。在此回复成功后会自动恢复；发送未确认或仅重启软件不会恢复。
                   <p className="mt-2">{activeHandoff.send_status === 'confirmed'
                     ? '转人工话术已收到平台发送回执。'
                     : activeHandoff.send_status === 'withheld'

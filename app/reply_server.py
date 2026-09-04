@@ -355,9 +355,9 @@ app.include_router(create_delivery_block_router(get_current_user, db_manager))
 app.include_router(create_desktop_notifications_router(desktop_notifications, DESKTOP_ACCESS_TOKEN, verify_token, db_manager))
 app.include_router(create_ai_knowledge_router(get_current_user, db_manager))
 
-def _clear_handoff_timed_pause(chat_id, cookie_id):
+def _clear_handoff_timed_pause(chat_id, cookie_id, confirmed_message_ids=()):
     from XianyuAutoAsync import pause_manager
-    pause_manager.resume_chat(chat_id, cookie_id)
+    pause_manager.resume_chat(chat_id, cookie_id, confirmed_message_ids)
 
 from app.routers.human_handoff import create_human_handoff_router
 app.include_router(create_human_handoff_router(get_current_user, db_manager, _clear_handoff_timed_pause))
@@ -1490,38 +1490,23 @@ async def send_chat_message(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     _get_owned_chat_account(cookie_id, current_user)
+    from app.services.manual_reply import send_manual_reply
     if request.image_ids:
         from app.services.reply_assets import ReplyAssets
-        from app.services.reply_delivery import send_parts, ReplyDeliveryError
         try:
             ReplyAssets(db_manager).validate(current_user['user_id'], request.image_ids)
         except (ValueError, PermissionError) as error:
             raise HTTPException(400, str(error)) from error
-        try:
-            count = await _run_on_account_loop(cookie_id, lambda instance: send_parts(
-                instance, db_manager, current_user['user_id'], request.cid.strip(), request.to_user_id.strip(), request.text, request.image_ids))
-        except ReplyDeliveryError as error:
-            raise HTTPException(409, str(error)) from error
-        return {'success': True, 'message': '已收到发送回执', 'data': {'parts': count}}
-    if not request.text.strip():
+    elif not request.text.strip():
         raise HTTPException(400, '消息不能为空')
-    response = await _run_on_account_loop(
-        cookie_id,
-        lambda instance: instance.send_im_text(
-            request.cid.strip(),
-            request.to_user_id.strip(),
-            request.text,
-        ),
-    )
-    body = response.get("body", {}) if isinstance(response, dict) else {}
-    message_id = ""
-    if isinstance(body, dict):
-        message_id = str(body.get("messageId") or body.get("msgId") or "")
+    result = await _run_on_account_loop(cookie_id, lambda instance: send_manual_reply(
+        instance, db_manager, current_user['user_id'], request.cid, request.to_user_id,
+        request.text, request.image_ids, _clear_handoff_timed_pause))
     logger.info(
         f"【{cookie_id}】后台用户 {current_user.get('username')} 人工发送闲鱼消息，"
         f"会话={request.cid}, 对方={request.to_user_id}, 长度={len(request.text)}"
     )
-    return {"success": True, "message": "发送成功", "data": {"messageId": message_id}}
+    return {"success": True, "message": "已收到发送回执", "data": result}
 
 
 @app.post('/send-message', response_model=SendMessageResponse)

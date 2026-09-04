@@ -48,6 +48,17 @@ def message_timestamp(message):
         return 0
 
 
+def outgoing_precedes_resume(db, cookie_id, chat_id, message_ms):
+    """Delayed self-echoes must not re-pause a conversation already resumed."""
+    if not isinstance(message_ms, (int, float)) or not math.isfinite(message_ms) or message_ms <= 0:
+        return False
+    service = HumanHandoffs(db)
+    with db.lock:
+        owner = service.owner(cookie_id)
+        state = service.state(owner, cookie_id, chat_id)
+    return bool(state and not state['pending'] and 0 < message_ms <= state['resumed_ms'])
+
+
 class HumanHandoffs:
     def __init__(self, db, clock=time.time):
         self.db = db

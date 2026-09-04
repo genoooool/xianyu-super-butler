@@ -60,13 +60,25 @@ class AutoReplyPauseManager:
     def __init__(self):
         # {(cookie_id, chat_id): pause_until_timestamp}
         self.paused_chats = {}
+        self.confirmed_reply_echoes = {}
 
     @staticmethod
     def _key(cookie_id: str, chat_id: str):
         return (str(cookie_id), str(chat_id))
 
-    def pause_chat(self, chat_id: str, cookie_id: str):
+    def pause_chat(self, chat_id: str, cookie_id: str, *, message_id=None, message_ms=None):
         """暂停指定账号下该 chat_id 的自动回复，使用账号特定的暂停时间"""
+        echo_key = (*self._key(cookie_id, chat_id), str(message_id))
+        if message_id and self.confirmed_reply_echoes.get(echo_key, 0) > time.time():
+            return
+        if message_ms is not None:
+            try:
+                from app.db_manager import db_manager
+                from app.services.human_handoff import outgoing_precedes_resume
+                if outgoing_precedes_resume(db_manager, cookie_id, chat_id, message_ms):
+                    return
+            except Exception:
+                logger.warning("无法核对历史发出消息的恢复时间，保留原人工暂停保护")
         # 获取账号特定的暂停时间
         try:
             from app.db_manager import db_manager
@@ -110,8 +122,16 @@ class AutoReplyPauseManager:
 
         return max(0, int(pause_until - time.time()))
 
-    def resume_chat(self, chat_id: str, cookie_id: str):
-        self.paused_chats.pop(self._key(cookie_id, str(chat_id).split('@', 1)[0]), None)
+    def resume_chat(self, chat_id: str, cookie_id: str, confirmed_message_ids=()):
+        key = self._key(cookie_id, str(chat_id).split('@', 1)[0])
+        self.paused_chats.pop(key, None)
+        now = time.time()
+        self.confirmed_reply_echoes = {k: expiry for k, expiry in self.confirmed_reply_echoes.items() if expiry > now}
+        for message_id in confirmed_message_ids:
+            if message_id:
+                self.confirmed_reply_echoes[(*key, str(message_id))] = now + 3600
+        while len(self.confirmed_reply_echoes) > 2048:
+            self.confirmed_reply_echoes.pop(next(iter(self.confirmed_reply_echoes)))
 
     def cleanup_expired_pauses(self):
         """清理已过期的暂停记录"""
@@ -10234,7 +10254,8 @@ class XianyuLive:
                 logger.info(f"[{msg_time}] 【手动发出】 商品({item_id}): {send_message}")
 
                 # 暂停该chat_id的自动回复10分钟
-                pause_manager.pause_chat(chat_id, self.cookie_id)
+                pause_manager.pause_chat(chat_id, self.cookie_id,
+                                         message_id=self._extract_message_id(message), message_ms=create_time)
 
                 return
             else:

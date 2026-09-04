@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -23,6 +24,7 @@ from app.services.ai_knowledge import KnowledgeService, initialize_schema
 from app.services.quick_phrases import QuickPhrases, initialize_schema as phrases_schema
 from app.services.human_handoff import HumanHandoffs, initialize_schema as handoff_schema
 from app.routers.human_handoff import create_human_handoff_router
+from app.services.manual_reply import send_manual_reply
 
 
 def main():
@@ -81,8 +83,17 @@ def main():
     def use_phrase(phrase_id: int): return dict(success=phrases.use(1,phrase_id))
     sends=[]; send_success=True
     @app.post('/chat/send/{cookie_id}')
-    async def record_send(request: Request):
-        sends.append(await request.json()); return dict(success=send_success,message='仅记录离线请求' if send_success else '离线模拟未确认')
+    async def record_send(cookie_id: str, request: Request):
+        data=await request.json(); sends.append(data)
+        if not send_success: return dict(success=False,message='离线模拟未确认')
+        receipt={'headers':{'code':200},'body':{'messageId':f'offline-{len(sends)}'}}
+        instance=SimpleNamespace(cookie_id=cookie_id,myid='seller',cookies_str='offline',
+            send_im_text=AsyncMock(return_value=receipt),_send_im_request=AsyncMock(return_value=receipt))
+        manager=AsyncMock()
+        manager.__aenter__.return_value=SimpleNamespace(upload_reply_bytes=AsyncMock(return_value='https://img.alicdn.com/offline.png'))
+        with patch.dict(sys.modules,{'utils.image_uploader':SimpleNamespace(ImageUploader=Mock(return_value=manager))}):
+            result=await send_manual_reply(instance,db,1,data['cid'],data['to_user_id'],data['text'],data.get('image_ids',[]),lambda *_: None)
+        return dict(success=True,message='离线模拟确认',data=result)
     app.mount('/static',StaticFiles(directory=args.static_dir))
     app.mount('/',StaticFiles(directory=args.static_dir,html=True))
     sock=socket.socket(); sock.bind(('127.0.0.1',0)); base=f'http://127.0.0.1:{sock.getsockname()[1]}'
@@ -251,6 +262,30 @@ def main():
             expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_be_visible()
             page.emulate_media(color_scheme='light')
             page.screenshot(path=str(args.output_dir/'handoff-light.png'))
+
+            # A failed reply keeps the takeover; confirmed image-only quick reply resumes it.
+            composer.get_by_placeholder('输入消息',exact=True).fill('人工回复未确认')
+            composer.get_by_role('button',name='发送',exact=True).click()
+            expect(page.get_by_text('发送未确认：离线模拟未确认。请先检查原会话，避免重复发送。',exact=True)).to_be_visible()
+            assert len(sends)==3 and len(handoffs.pending(1))==3
+            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_be_visible()
+            composer.get_by_placeholder('输入消息',exact=True).fill('')
+            page.get_by_title('快捷短语',exact=True).click()
+            page.get_by_role('button',name='[默认] 价格图片').click()
+            send_success=True
+            composer.get_by_role('button',name='发送',exact=True).click()
+            expect(page.get_by_text('消息已发送，已恢复此会话的自动回复',exact=True)).to_be_visible()
+            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_have_count(0)
+            expect(composer.get_by_label('添加回复图片')).to_have_count(0)
+            assert len(sends)==4 and len(handoffs.pending(1))==2
+            page.screenshot(path=str(args.output_dir/'handoff-auto-resumed.png'))
+
+            # Keep the explicit recovery control for replies handled outside this workbench.
+            state=handoffs.state(1,'a','chat')
+            first=handoffs.begin(1,'a','chat',state['revision'],state['resumed_ms']+1,'unclear','buyer','离线测试买家','one')
+            handoffs.finish_send(first,'confirmed')
+            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_be_visible()
+            while page.get_by_label('关闭提示',exact=True).count(): page.get_by_label('关闭提示',exact=True).first.click()
             page.get_by_role('button',name='已处理，恢复自动回复').click()
             expect(page.get_by_role('alertdialog',name='恢复自动回复')).to_be_visible()
             page.get_by_role('button',name='取消',exact=True).click()
@@ -271,7 +306,7 @@ def main():
             page.get_by_label('消息账号').select_option('b')
             expect(page.get_by_text('另一店买家',exact=True).first).to_be_visible()
             expect(page.get_by_text('列表外买家',exact=True)).to_have_count(0)
-            assert len(sends)==2, 'Resume and unconfirmed sends must never automatically replay a buyer message'
+            assert len(sends)==4, 'Resume and unconfirmed sends must never automatically replay a buyer message'
             page.get_by_role('button',name='账号管理',exact=True).click()
             account=page.locator('article').filter(has_text='测试店铺 A')
             expect(account.get_by_text('自动确认发货',exact=True)).to_be_visible()

@@ -1066,7 +1066,11 @@ export const getChatMessages = async (
 export const sendChatMessage = async (
   cookieId: string,
   data: { cid: string; to_user_id: string; text: string; image_ids?: string[] }
-): Promise<{ success: boolean; message: string; data?: { messageId?: string } }> => {
+): Promise<{ success: boolean; message: string; data?: {
+  messageId?: string;
+  handoff_auto_resume?: 'resumed' | 'not_pending' | 'changed' | 'failed';
+  handoff_resumed_revision?: number;
+} }> => {
   return post(`/chat/send/${encodeURIComponent(cookieId)}`, data);
 };
 

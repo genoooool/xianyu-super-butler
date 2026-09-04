@@ -97,6 +97,11 @@ def main():
             assert session.get(base+'/ai-knowledge/images/'+asset['id']).content==image.content
             entries=session.get(base+'/chat/handoffs').json()['entries']
             assert len(entries)==1 and entries[0]['send_status']=='unknown'
+            # Frozen manual-reply import/route and offline rejection: never clear a takeover without delivery.
+            unavailable=session.post(base+'/chat/send/offline-handoff',json=dict(
+                cid='offline-chat',to_user_id='nobody',text='离线隔离验证'))
+            assert unavailable.status_code in (409,503), unavailable.text
+            assert len(session.get(base+'/chat/handoffs').json()['entries'])==1
             endpoint='/chat/handoffs/offline-handoff/offline-chat/resume'
             assert session.post(base+endpoint,json={'revision':2}).status_code==409
             post(endpoint,json={'revision':1})
@@ -107,7 +112,7 @@ def main():
             assert db.execute('PRAGMA quick_check').fetchone()[0]=='ok'
             db.close()
             report=dict(status='passed',ready_seconds=ready,packaged_qa_image=True,phrase_image=True,backup_roundtrip=True,
-                        private_asset_guard=True,handoff_resume=True,multiselect_crud=True,
+                        private_asset_guard=True,handoff_resume=True,multiselect_crud=True,offline_send_keeps_handoff=True,
                         ai_enablement_unchanged=True,buyer_messages_sent=0)
             (args.output_dir/'result.json').write_text(json.dumps(report,indent=2)+'\n')
             print(json.dumps(report),flush=True)

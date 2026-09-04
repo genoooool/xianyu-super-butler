@@ -12,7 +12,7 @@ class ReplyDeliveryError(RuntimeError):
         super().__init__(f"已确认发送{sent_count}部分，其余未发送或结果未确认；请先检查聊天记录，不要直接重复发送。({type(cause).__name__})")
 
 
-def require_receipt(response):
+def require_receipt(response, *, explicit_success=False):
     if not isinstance(response, dict):
         raise RuntimeError("未收到发送回执")
     headers = response.get('headers') or {}
@@ -23,9 +23,12 @@ def require_receipt(response):
         raise RuntimeError("发送回执无效")
     if body.get('code') not in (None, 0, '0', 200, '200'):
         raise RuntimeError("平台拒绝发送")
+    if explicit_success and (str(headers.get('code')) not in {'200', '0'} or body.get('success') is False):
+        raise RuntimeError("未收到明确成功的发送回执")
 
 
-async def send_parts(instance, db, owner_id, cid, toid, text, images, check=lambda: True):
+async def send_parts(instance, db, owner_id, cid, toid, text, images, check=lambda: True,
+                     *, explicit_receipt=False, on_receipt=None):
     assets = ReplyAssets(db)
     assets.validate(owner_id, images)
     if not isinstance(text, str) or len(text) > 2000 or (not text and not images) or '__IMAGE_SEND__' in text:
@@ -52,8 +55,10 @@ async def send_parts(instance, db, owner_id, cid, toid, text, images, check=lamb
         if text:
             guard()
             response = await instance.send_im_text(cid, toid, text)
-            require_receipt(response)
+            require_receipt(response, explicit_success=explicit_receipt)
             sent += 1
+            if on_receipt:
+                on_receipt(response)
         if uploaded:
             guard()
             content = base64.b64encode(json.dumps(dict(contentType=2, image=dict(pics=uploaded)), ensure_ascii=False).encode()).decode()
@@ -62,8 +67,10 @@ async def send_parts(instance, db, owner_id, cid, toid, text, images, check=lamb
                      content=dict(contentType=101, custom=dict(type=1, data=content)), redPointPolicy=0,
                      extension=dict(extJson='{}'), ctx=dict(appVersion='1.0', platform='web'), mtags={}, msgReadStatusSetting=1),
                 dict(actualReceivers=[toid if '@goofish' in toid else toid+'@goofish', str(instance.myid)+'@goofish'])])
-            require_receipt(response)
+            require_receipt(response, explicit_success=explicit_receipt)
             sent += 1
+            if on_receipt:
+                on_receipt(response)
         return sent
     except Exception as error:
         raise ReplyDeliveryError(sent, error) from error
