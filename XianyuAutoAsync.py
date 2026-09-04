@@ -1247,6 +1247,7 @@ class XianyuLive:
     def mark_delivery_sent(self, order_id: str, update_order_status: bool = True):
         """标记订单已发货"""
         self.delivery_sent_orders.add(order_id)
+        self.delivery_blocked_orders.discard(order_id)
         self.last_delivery_time[order_id] = time.time()
         logger.info(f"【{self.cookie_id}】订单 {order_id} 已标记为发货")
 
@@ -1925,6 +1926,8 @@ class XianyuLive:
                         self._lock_hold_info[lock_key]['task'] = delay_task
 
                         # 发送所有获取到的发货内容
+                        # 内容已取出；取消/回执不明时也保持运行期阻止重发。
+                        self.delivery_blocked_orders.add(order_id)
                         sent_count = 0
                         send_errors = []
                         for i, delivery_content in enumerate(delivery_contents):
@@ -1946,7 +1949,7 @@ class XianyuLive:
                                         image_url = image_data
 
                                     # 发送图片消息
-                                    await self.send_image_msg(websocket, chat_id, send_user_id, image_url, card_id=card_id)
+                                    await self.send_image_msg(websocket, chat_id, send_user_id, image_url, card_id=card_id, wait_for_ack=True)
                                     if len(delivery_contents) > 1:
                                         logger.info(f'[{msg_time}] 【多数量自动发货图片】第 {i+1}/{len(delivery_contents)} 张已向 {user_url} 发送图片: {image_url}')
                                     else:
@@ -1958,7 +1961,7 @@ class XianyuLive:
 
                                 else:
                                     # 普通文本发货内容
-                                    await self.send_msg(websocket, chat_id, send_user_id, delivery_content)
+                                    await self.send_msg(websocket, chat_id, send_user_id, delivery_content, wait_for_ack=True)
                                     if len(delivery_contents) > 1:
                                         logger.info(f'[{msg_time}] 【多数量自动发货】第 {i+1}/{len(delivery_contents)} 条已向 {user_url} 发送发货内容')
                                     else:
@@ -1973,6 +1976,7 @@ class XianyuLive:
                                 error_message = self._safe_str(e)
                                 send_errors.append(f"第{i + 1}条: {error_message}")
                                 logger.error(f"发送第 {i+1} 条消息失败: {error_message}")
+                                break  # 回执不明时不继续发送后续卡券，也不重试这一条。
 
                         acquired_all = len(delivery_contents) == quantity_to_send
                         sent_all = sent_count == len(delivery_contents)
@@ -6671,7 +6675,22 @@ class XianyuLive:
         }
         await ws.send(json.dumps(msg))
 
-    async def send_msg(self, ws, cid, toid, text):
+    async def _send_delivery_request(self, ws, message):
+        """Card delivery requires a correlated, explicitly successful platform receipt."""
+        from app.services.reply_delivery import require_receipt
+
+        if ws is None or ws is not self.ws:
+            raise ConnectionError("发货连接已改变，请先核对原订单，避免重复发卡")
+        response = await self._send_im_request(message['lwp'], message['body'])
+        require_receipt(response)
+        headers = response.get('headers')
+        if not isinstance(headers, dict) or str(headers.get('code')) not in {'200', '0'}:
+            raise RuntimeError("卡券消息未获得明确成功回执，请先人工核对")
+        if response['body'].get('success') is False:
+            raise RuntimeError("平台拒绝卡券消息，请先人工核对")
+        return response
+
+    async def send_msg(self, ws, cid, toid, text, *, wait_for_ack=False):
         text = {
             "contentType": 1,
             "text": {
@@ -6715,6 +6734,8 @@ class XianyuLive:
                 }
             ]
         }
+        if wait_for_ack:
+            return await self._send_delivery_request(ws, msg)
         await ws.send(json.dumps(msg))
 
     def _resolve_im_response(self, message_data):
@@ -6763,12 +6784,12 @@ class XianyuLive:
         async with self._im_request_lock:
             self._im_pending[mid] = future
             try:
-                await websocket.send(json.dumps({
+                await asyncio.wait_for(websocket.send(json.dumps({
                     "lwp": lwp,
                     "headers": {"mid": mid},
                     "body": body,
-                }))
-            except Exception:
+                })), timeout=timeout)
+            except (Exception, asyncio.CancelledError):
                 self._im_pending.pop(mid, None)
                 raise
 
@@ -11440,7 +11461,7 @@ class XianyuLive:
             'off_shelf_count': off_shelf_count
         }
 
-    async def send_image_msg(self, ws, cid, toid, image_url, width=800, height=600, card_id=None):
+    async def send_image_msg(self, ws, cid, toid, image_url, width=800, height=600, card_id=None, *, wait_for_ack=False):
         """发送图片消息"""
         try:
             # 检查图片URL是否需要上传到CDN
@@ -11556,6 +11577,8 @@ class XianyuLive:
                 ]
             }
 
+            if wait_for_ack:
+                return await self._send_delivery_request(ws, msg)
             await ws.send(json.dumps(msg))
             logger.info(f"【{self.cookie_id}】图片消息发送成功: {image_url}")
 

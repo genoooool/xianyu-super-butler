@@ -8337,6 +8337,15 @@ async def manual_ship_orders(
                         failed_count += 1
                         continue
 
+                    if not live_instance.can_auto_delivery(order_id):
+                        results.append({
+                            'order_id': order_id,
+                            'success': False,
+                            'message': '该订单已发卡或存在未确认的发卡记录，请先核对聊天记录；已收到卡密时选择“仅修改闲鱼发货状态”，不要重复完整发货'
+                        })
+                        failed_count += 1
+                        continue
+
                     # 查找与买家的chat_id（优先从订单记录获取，回退到AI对话记录）
                     chat_id = order.get('chat_id') or ''
                     if not chat_id:
@@ -8436,6 +8445,7 @@ async def manual_ship_orders(
                         continue
 
                     # 发送卡券内容给买家
+                    live_instance.delivery_blocked_orders.add(order_id)
                     sent_count = 0
                     send_errors = []
                     for idx, content in enumerate(delivery_contents):
@@ -8451,13 +8461,17 @@ async def manual_ship_orders(
                                         card_id = None
                                 else:
                                     image_url = image_data
-                                await live_instance.send_image_msg(
-                                    live_instance.ws, chat_id, buyer_id,
-                                    image_url, card_id=card_id
+                                await _run_on_account_loop(
+                                    cookie_id, lambda instance: instance.send_image_msg(
+                                        instance.ws, chat_id, buyer_id,
+                                        image_url, card_id=card_id, wait_for_ack=True
+                                    )
                                 )
                             else:
-                                await live_instance.send_msg(
-                                    live_instance.ws, chat_id, buyer_id, content
+                                await _run_on_account_loop(
+                                    cookie_id, lambda instance: instance.send_msg(
+                                        instance.ws, chat_id, buyer_id, content, wait_for_ack=True
+                                    )
                                 )
 
                             # 多条消息之间间隔1秒
@@ -8467,6 +8481,7 @@ async def manual_ship_orders(
                         except Exception as e:
                             log_with_user('error', f"发送第{idx+1}条卡券消息失败: {str(e)}", current_user)
                             send_errors.append(f"第{idx + 1}条: {str(e)}")
+                            break
 
                     acquired_all = len(delivery_contents) == quantity_to_send
                     sent_all = sent_count == len(delivery_contents)
