@@ -1969,7 +1969,9 @@ class XianyuLive:
                                         image_url = image_data
 
                                     # 发送图片消息
-                                    await self.send_image_msg(websocket, chat_id, send_user_id, image_url, card_id=card_id, wait_for_ack=True)
+                                    from app.services.receipt_audit import receipt_scope
+                                    with receipt_scope(order_id, 'auto_delivery', i + 1):
+                                        await self.send_image_msg(websocket, chat_id, send_user_id, image_url, card_id=card_id, wait_for_ack=True)
                                     if len(delivery_contents) > 1:
                                         logger.info(f'[{msg_time}] 【多数量自动发货图片】第 {i+1}/{len(delivery_contents)} 张已向 {user_url} 发送图片: {image_url}')
                                     else:
@@ -1981,7 +1983,9 @@ class XianyuLive:
 
                                 else:
                                     # 普通文本发货内容
-                                    await self.send_msg(websocket, chat_id, send_user_id, delivery_content, wait_for_ack=True)
+                                    from app.services.receipt_audit import receipt_scope
+                                    with receipt_scope(order_id, 'auto_delivery', i + 1):
+                                        await self.send_msg(websocket, chat_id, send_user_id, delivery_content, wait_for_ack=True)
                                     if len(delivery_contents) > 1:
                                         logger.info(f'[{msg_time}] 【多数量自动发货】第 {i+1}/{len(delivery_contents)} 条已向 {user_url} 发送发货内容')
                                     else:
@@ -6782,6 +6786,7 @@ class XianyuLive:
                 future.set_exception(ConnectionError(reason))
 
     async def _send_im_request(self, lwp, body, timeout=15):
+        from app.services.receipt_audit import SEND_PATH, record_im
         websocket = self.ws
         if websocket is None:
             # 风控冷却期内连接建不起来，给出可操作的提示而不是笼统的"未连接"
@@ -6803,21 +6808,34 @@ class XianyuLive:
         future = asyncio.get_running_loop().create_future()
         async with self._im_request_lock:
             self._im_pending[mid] = future
+            if lwp == SEND_PATH:
+                record_im(self.cookie_id, mid, 'started')
             try:
                 await asyncio.wait_for(websocket.send(json.dumps({
                     "lwp": lwp,
                     "headers": {"mid": mid},
                     "body": body,
                 })), timeout=timeout)
-            except (Exception, asyncio.CancelledError):
+            except (Exception, asyncio.CancelledError) as exc:
                 self._im_pending.pop(mid, None)
+                if lwp == SEND_PATH:
+                    record_im(self.cookie_id, mid, 'unknown', error=exc)
                 raise
 
         try:
-            return await asyncio.wait_for(future, timeout=timeout)
+            response = await asyncio.wait_for(future, timeout=timeout)
+            if lwp == SEND_PATH:
+                record_im(self.cookie_id, mid, 'response', response=response)
+            return response
         except asyncio.TimeoutError as exc:
             self._im_pending.pop(mid, None)
+            if lwp == SEND_PATH:
+                record_im(self.cookie_id, mid, 'unknown', error=exc)
             raise TimeoutError(f"闲鱼消息服务响应超时: {lwp}") from exc
+        except (Exception, asyncio.CancelledError) as exc:
+            if lwp == SEND_PATH:
+                record_im(self.cookie_id, mid, 'unknown', error=exc)
+            raise
         finally:
             self._im_pending.pop(mid, None)
 

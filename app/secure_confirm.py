@@ -7,6 +7,7 @@ import asyncio
 import time
 from loguru import logger
 from utils.xianyu_utils import generate_sign, trans_cookies
+from app.services.receipt_audit import record_shipping
 
 
 class SecureConfirm:
@@ -135,6 +136,8 @@ class SecureConfirm:
                 data=data
             ) as response:
                 res_json = await response.json()
+                record_shipping(self.cookie_id, order_id, retry_count + 1,
+                                response=res_json, http_status=response.status)
 
                 # 检查并更新Cookie
                 if 'set-cookie' in response.headers:
@@ -153,8 +156,6 @@ class SecureConfirm:
                         await self._update_config_cookies()
                         logger.debug("已更新Cookie到数据库")
 
-                logger.info(f"【{self.cookie_id}】自动确认发货响应: {res_json}")
-
                 # 检查响应结果
                 if res_json.get('ret') and res_json['ret'][0] == 'SUCCESS::调用成功':
                     logger.info(f"【{self.cookie_id}】✅ 自动确认发货成功，订单ID: {order_id}")
@@ -167,6 +168,7 @@ class SecureConfirm:
 
 
         except Exception as e:
+            record_shipping(self.cookie_id, order_id, retry_count + 1, error=e)
             logger.error(f"【{self.cookie_id}】自动确认发货API请求异常: {self._safe_str(e)}")
             await asyncio.sleep(0.5)
 

@@ -8435,6 +8435,7 @@ async def manual_ship_orders(
                     send_errors = []
                     for idx, content in enumerate(delivery_contents):
                         try:
+                            from app.services.receipt_audit import receipt_scope
                             if content.startswith("__IMAGE_SEND__"):
                                 image_data = content.replace("__IMAGE_SEND__", "")
                                 card_id = None
@@ -8446,18 +8447,20 @@ async def manual_ship_orders(
                                         card_id = None
                                 else:
                                     image_url = image_data
-                                await _run_on_account_loop(
-                                    cookie_id, lambda instance: instance.send_image_msg(
-                                        instance.ws, chat_id, buyer_id,
-                                        image_url, card_id=card_id, wait_for_ack=True
+                                with receipt_scope(order_id, 'manual_delivery', idx + 1):
+                                    await _run_on_account_loop(
+                                        cookie_id, lambda instance: instance.send_image_msg(
+                                            instance.ws, chat_id, buyer_id,
+                                            image_url, card_id=card_id, wait_for_ack=True
+                                        )
                                     )
-                                )
                             else:
-                                await _run_on_account_loop(
-                                    cookie_id, lambda instance: instance.send_msg(
-                                        instance.ws, chat_id, buyer_id, content, wait_for_ack=True
+                                with receipt_scope(order_id, 'manual_delivery', idx + 1):
+                                    await _run_on_account_loop(
+                                        cookie_id, lambda instance: instance.send_msg(
+                                            instance.ws, chat_id, buyer_id, content, wait_for_ack=True
+                                        )
                                     )
-                                )
 
                             # 多条消息之间间隔1秒
                             if len(delivery_contents) > 1 and idx < len(delivery_contents) - 1:
