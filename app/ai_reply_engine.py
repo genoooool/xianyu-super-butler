@@ -20,6 +20,7 @@ from loguru import logger
 from openai import OpenAI
 from app.db_manager import db_manager
 from app.services.ai_knowledge import KnowledgeService
+from app.services.human_handoff import HandoffReply, HANDOFF_MARKER, HANDOFF_REPLY
 
 
 class ReasoningBudgetExhausted(RuntimeError):
@@ -710,6 +711,7 @@ class AIReplyEngine:
 - 不得编造库存、规格、物流或售后承诺。没有明确SKU价格与数量对应关系时，引导买家点击商品购买页面查看对应报价，不自行换算。
 - 付款、发货、退款、收货和订单完成由系统订单状态与自动发货规则处理。
 - 未经系统确认，不得声称上述操作已成功，也不得要求买家重复付款。
+- 如果资料无法解答、互相矛盾或仍拿不准，只输出 __HUMAN_HANDOFF__，由程序转人工；不要猜测，也不要自行承诺已转接。
 - 直接输出适合发送给买家的简短回复，不要解释规则。"""
 
                 knowledge = KnowledgeService(db_manager).for_reply(cookie_id, item_id, message)
@@ -717,8 +719,7 @@ class AIReplyEngine:
                     logger.info("AI知识引用: 账号={}, 资料编号={}", cookie_id, [entry["id"] for entry in knowledge])
                 else:
                     # With no fixed QA and no knowledge, do not invent an answer from a listing price.
-                    from app.services.fixed_replies import CLARIFY_REPLY
-                    return CLARIFY_REPLY
+                    return HandoffReply('no_knowledge')
                 from app.services.ai_context_budget import build_bounded_messages
                 messages = build_bounded_messages(
                     system_prompt, safety_prompt, knowledge, [
@@ -731,10 +732,15 @@ class AIReplyEngine:
 
                 reply = self._generate_with_retry(settings, messages, cookie_id)
 
+                if isinstance(reply, str) and HANDOFF_MARKER in reply:
+                    return HandoffReply('ai_uncertain')
+
                 reply = self._normalize_reply(reply)
                 if not reply:
                     logger.warning(f"AI服务返回空回复，账号={cookie_id}, intent={intent}")
-                    return None
+                    return HandoffReply('ai_empty')
+                if HANDOFF_MARKER in reply or reply == HANDOFF_REPLY:
+                    return HandoffReply('ai_uncertain')
 
                 # 10.5 议价底价硬校验。底价原先只写在提示词里，模型不照做就没人管 ——
                 # 实测 196 元的商品被一路让到 168，而按 max_discount_percent=10
@@ -764,7 +770,7 @@ class AIReplyEngine:
                 
         except Exception as e:
             logger.error(f"AI回复生成失败: 账号={cookie_id}, 错误={type(e).__name__}: {e}")
-            return None
+            return HandoffReply('ai_failed')
 
     async def generate_reply_async(self, message: str, item_info: dict, chat_id: str,
                                    cookie_id: str, user_id: str, item_id: str,
@@ -778,7 +784,7 @@ class AIReplyEngine:
             return await _asyncio.to_thread(self.generate_reply, message, item_info, chat_id, cookie_id, user_id, item_id, skip_wait)
         except Exception as e:
             logger.error(f"异步生成回复失败: {e}")
-            return None
+            return HandoffReply('ai_failed')
     
     def get_conversation_context(self, chat_id: str, cookie_id: str, item_id: Optional[str] = None,
                                  limit: int = 20, max_age_minutes: int = 120,

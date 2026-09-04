@@ -21,6 +21,7 @@ import {
   ChatAccount,
   ChatConversation,
   ChatMessage,
+  HumanHandoff,
   Item,
   MessageFilter,
   MessageFilterType,
@@ -34,6 +35,8 @@ import {
   getChatAccounts,
   getChatConversations,
   getChatMessages,
+  getHumanHandoffs,
+  resumeHumanHandoff,
   getItems,
   getMessageFilters,
   getQuickPhrases,
@@ -165,6 +168,13 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [items, setItems] = useState<Item[]>([]);
   const [activeAccountId, setActiveAccountId] = useState('');
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
+  const [handoffs, setHandoffs] = useState<HumanHandoff[]>([]);
+  const [resumingHandoff, setResumingHandoff] = useState(false);
+  const [handoffLoadError, setHandoffLoadError] = useState(false);
+  const handoffsRef = useRef(handoffs);
+  handoffsRef.current = handoffs;
+  const accountIdRef = useRef(activeAccountId);
+  accountIdRef.current = activeAccountId;
   // 按图片地址记录加载失败的头像，避免反复请求同一个取不到的外部地址
   const [failedAvatars, setFailedAvatars] = useState<Set<string>>(new Set());
   const [activeCid, setActiveCid] = useState('');
@@ -208,7 +218,19 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [savingFilters, setSavingFilters] = useState(false);
 
   const activeAccount = accounts.find((account) => account.accountId === activeAccountId);
-  const activeConversation = conversations.find((conversation) => conversation.cid === activeCid);
+  const accountHandoffs = handoffs.filter((entry) => entry.cookie_id === activeAccountId);
+  const activeHandoff = accountHandoffs.find((entry) => entry.chat_id === activeCid);
+  // Pending chats stay reachable even when the platform list is offline, paged or rate-limited.
+  const allConversations = useMemo(() => {
+    const pending = handoffs.filter((entry) => entry.cookie_id === activeAccountId);
+    const extra: ChatConversation[] = pending.filter((entry) => !conversations.some((c) => c.cid === entry.chat_id)).map((entry) => ({
+      cid: entry.chat_id, rawCid: entry.chat_id, otherUserId: entry.buyer_id, otherUserName: entry.buyer_name,
+      itemId: entry.item_id, lastMessageSummary: '等待人工客服处理', lastMessageTime: entry.created_ms, unreadCount: 0,
+    }));
+    const ids = new Set(pending.map((entry) => entry.chat_id));
+    return [...extra, ...conversations].sort((a, b) => Number(ids.has(b.cid)) - Number(ids.has(a.cid)));
+  }, [conversations, handoffs, activeAccountId]);
+  const activeConversation = allConversations.find((conversation) => conversation.cid === activeCid);
 
   const itemMap = useMemo(
     () => new Map(items.map((item) => [`${item.cookie_id}:${item.item_id}`, item])),
@@ -221,8 +243,8 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
 
   const visibleConversations = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
-    if (!normalized) return conversations;
-    return conversations.filter((conversation) =>
+    if (!normalized) return allConversations;
+    return allConversations.filter((conversation) =>
       [
         conversation.otherUserName,
         conversation.otherUserId,
@@ -231,7 +253,43 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
         conversation.lastMessageSummary,
       ].some((value) => String(value || '').toLocaleLowerCase().includes(normalized))
     );
-  }, [conversations, query]);
+  }, [allConversations, query]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    let cancelled = false;
+    let busy = false;
+    const refresh = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const entries = await getHumanHandoffs();
+        if (!cancelled) { setHandoffs(entries); setHandoffLoadError(false); }
+      } catch {
+        if (!cancelled) setHandoffLoadError(true); // Do not clear still-pending badges on a transient failure.
+      } finally { busy = false; }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2000); // Local SQLite only; no Xianyu requests.
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [isActive]);
+
+  const handleResumeHandoff = async () => {
+    if (!activeHandoff || resumingHandoff) return;
+    const target = activeHandoff;
+    const accepted = await confirmAction('确认已处理完这段会话？恢复后只回复新消息，不补发旧消息，也不会开启原本关闭的 AI。', {
+      title: '恢复自动回复', confirmLabel: '确认恢复', danger: false,
+    });
+    if (!accepted) return;
+    setResumingHandoff(true);
+    try {
+      const result = await resumeHumanHandoff(target);
+      setHandoffs((entries) => entries.filter((entry) => !(entry.cookie_id === target.cookie_id && entry.chat_id === target.chat_id && entry.revision === target.revision)));
+      notify(result.message, 'success');
+    } catch (error) {
+      notify(`恢复未完成：${(error as Error).message}`, 'error');
+    } finally { setResumingHandoff(false); }
+  };
 
   const selectedAllFilters = filters.length > 0
     && filters.every((filter) => selectedFilterIds.includes(filter.id));
@@ -296,9 +354,11 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     if (!silent) setConversationsLoading(true);
     try {
       const result = await getChatConversations(activeAccountId);
+      if (accountIdRef.current !== activeAccountId) return;
       const incoming = result.conversations || [];
       const currentCid = activeCidRef.current;
-      const nextCid = incoming.some((conversation) => conversation.cid === currentCid)
+      const pendingCurrent = handoffsRef.current.some((entry) => entry.cookie_id === activeAccountId && entry.chat_id === currentCid);
+      const nextCid = pendingCurrent || incoming.some((conversation) => conversation.cid === currentCid)
         ? currentCid
         : incoming[0]?.cid || '';
       const normalized = incoming.map((conversation) => {
@@ -321,7 +381,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
         // 用户已经选了会话就不要动它。会话列表是定时刷新的，一旦某次刷新
         // 因限流或数据不全而没带上当前会话，这里就会把用户强行切回第一条 ——
         // 表现为「点第二个及之后的对话，消息区一片空白」。
-        const next = current && incoming.some((conversation) => conversation.cid === current)
+        const next = current && (handoffsRef.current.some((entry) => entry.cookie_id === activeAccountId && entry.chat_id === current) || incoming.some((conversation) => conversation.cid === current))
           ? current
           : incoming[0]?.cid || '';
         activeCidRef.current = next;
@@ -561,6 +621,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
             {accounts.map((account) => (
               <option key={account.accountId} value={account.accountId}>
                 {account.connected ? '在线' : '离线'} · {accountName(account)}
+                {handoffs.some((entry) => entry.cookie_id === account.accountId) ? ` · 待人工 ${handoffs.filter((entry) => entry.cookie_id === account.accountId).length}` : ''}
               </option>
             ))}
           </select>
@@ -623,6 +684,8 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
+          {handoffLoadError && <p role="status" className="px-4 py-2 text-xs text-red-600">待人工状态暂时无法刷新，请稍后重试；自动回复不会因此恢复。</p>}
+          {accountHandoffs.length > 0 && <p className="px-4 py-2 text-xs font-bold text-red-600">待人工处理 {accountHandoffs.length} 个会话 · 已暂停自动回复</p>}
           {conversationsLoading && conversations.length === 0 && (
             <div className="flex justify-center py-16">
               <Loader2 className="h-6 w-6 animate-spin text-[#d6b600]" />
@@ -644,6 +707,9 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="truncate text-sm font-bold text-[var(--text)]">{title}</p>
+                    {accountHandoffs.some((entry) => entry.chat_id === conversation.cid) && (
+                      <span className="shrink-0 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-bold text-red-700">待人工</span>
+                    )}
                     {conversation.unreadCount > 0 && (
                       <span className="min-w-5 rounded-full bg-[var(--unread-badge)] px-1.5 text-center text-[10px] leading-5 text-white">
                         {conversation.unreadCount > 99 ? '99+' : conversation.unreadCount}
@@ -706,6 +772,24 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                 {activeAccount?.connected ? '账号在线' : '账号离线'}
               </span>
             </header>
+
+            {activeHandoff && (
+              <div role="status" className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] bg-[var(--surface-subtle)] px-5 py-3">
+                <div className="min-w-0 text-xs text-[var(--text-muted)]">
+                  <span className="mr-2 inline-flex rounded-full bg-red-100 px-2 py-1 font-bold text-red-700">待人工处理</span>
+                  自动回复已暂停，重启后也不会自动恢复。
+                  <p className="mt-2">{activeHandoff.send_status === 'confirmed'
+                    ? '转人工话术已收到平台发送回执。'
+                    : activeHandoff.send_status === 'withheld'
+                      ? '发送前状态已改变，转人工话术未发送，请直接接手。'
+                      : '转人工话术发送结果未确认，请先查看原会话，避免重复发送。'}</p>
+                </div>
+                <button type="button" disabled={resumingHandoff} onClick={() => void handleResumeHandoff()}
+                  className="shrink-0 rounded-full bg-[var(--brand)] px-4 py-2 text-xs font-bold text-[var(--brand-ink)] disabled:opacity-50">
+                  {resumingHandoff ? '正在恢复…' : '已处理，恢复自动回复'}
+                </button>
+              </div>
+            )}
 
             <div className="flex min-h-[84px] shrink-0 items-center gap-3 border-b border-[var(--border)] px-4 py-3 sm:min-h-[92px] sm:gap-4 sm:px-5">
               {normalizeImageUrl(activeConversation.itemImage || activeItem?.item_image) ? (

@@ -354,6 +354,13 @@ else:
 app.include_router(create_delivery_block_router(get_current_user, db_manager))
 app.include_router(create_desktop_notifications_router(desktop_notifications, DESKTOP_ACCESS_TOKEN, verify_token, db_manager))
 app.include_router(create_ai_knowledge_router(get_current_user, db_manager))
+
+def _clear_handoff_timed_pause(chat_id, cookie_id):
+    from XianyuAutoAsync import pause_manager
+    pause_manager.resume_chat(chat_id, cookie_id)
+
+from app.routers.human_handoff import create_human_handoff_router
+app.include_router(create_human_handoff_router(get_current_user, db_manager, _clear_handoff_timed_pause))
 app.include_router(create_desktop_credentials_router(DESKTOP_ACCESS_TOKEN, DESKTOP_ACCESS_COOKIE, get_current_user, db_manager))
 logger.info("已注册发货拦截规则路由")
 

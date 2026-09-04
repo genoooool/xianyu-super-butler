@@ -6,7 +6,10 @@ import re
 
 from app.services.ai_knowledge import KnowledgeService, normalize, SCOPE_PRIORITY
 
-CLARIFY_REPLY = "亲，麻烦再说下您具体想咨询的问题，我帮您确认哦。"
+from app.services.human_handoff import HANDOFF_REPLY
+
+# Kept as a compatibility name; ambiguity now enters durable human takeover.
+CLARIFY_REPLY = HANDOFF_REPLY
 MAX_CANDIDATES = 60
 
 

@@ -22,6 +22,7 @@ from app.services.fixed_replies import FixedReplies, CLARIFY_REPLY
 from app.services.quick_phrases import QuickPhrases, initialize_schema as phrases_schema
 from app.services.reply_assets import ReplyAssets, MAX_IMAGE_BYTES
 from app.services.reply_delivery import send_parts, ReplyDeliveryError, require_receipt
+from app.services.human_handoff import initialize_schema as handoff_schema
 
 
 def png():
@@ -44,7 +45,7 @@ class Fixture(unittest.TestCase):
                 sort_order INTEGER DEFAULT 0,enabled INTEGER DEFAULT 1,use_count INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
         ''')
-        initialize_schema(self.db.conn.cursor()); phrases_schema(self.db.conn.cursor()); self.db.conn.commit()
+        initialize_schema(self.db.conn.cursor()); phrases_schema(self.db.conn.cursor()); handoff_schema(self.db.conn.cursor()); self.db.conn.commit()
         self.knowledge = KnowledgeService(self.db)
         self.fixed = FixedReplies(self.db)
         self.assets = ReplyAssets(self.db)
@@ -250,6 +251,11 @@ class ActualCallerTests(Fixture):
         instance=SimpleNamespace(cookie_id='a',_add_reply_decision_log=Mock(return_value=1),_update_reply_decision_log=Mock(),_safe_str=str,
             get_keyword_reply=AsyncMock(return_value=None),get_ai_reply=AsyncMock(return_value=None),get_default_reply=AsyncMock(return_value='UNSAFE DEFAULT'),send_msg=AsyncMock(),send_image_msg=AsyncMock())
         sent=[]
+        async def send_handoff(chat_id, buyer_id, text):
+            if failure: raise RuntimeError('offline failure')
+            sent.append((text, []))
+            return self.receipt
+        instance.send_im_text = AsyncMock(side_effect=send_handoff)
         async def deliver(*args):
             if failure: raise RuntimeError('offline failure')
             if args[-1](): sent.append(args[5:7])

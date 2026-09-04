@@ -66,6 +66,15 @@ class CrossAccountIsolationTests(unittest.TestCase):
 
         self.assertFalse(self.manager.is_chat_paused('99999999', ACC_A))
 
+    def test_explicit_resume_clears_only_target_account_conversation(self):
+        self.manager.pause_chat(SHARED_CHAT, ACC_A)
+        self.manager.pause_chat(SHARED_CHAT, ACC_B)
+        self.manager.pause_chat('another', ACC_A)
+        self.manager.resume_chat(SHARED_CHAT + '@goofish', ACC_A)
+        self.assertFalse(self.manager.is_chat_paused(SHARED_CHAT, ACC_A))
+        self.assertTrue(self.manager.is_chat_paused(SHARED_CHAT, ACC_B))
+        self.assertTrue(self.manager.is_chat_paused('another', ACC_A))
+
 
 class PauseExpiryTests(unittest.TestCase):
     def setUp(self):

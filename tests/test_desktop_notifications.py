@@ -83,7 +83,19 @@ class DesktopNotificationTests(unittest.TestCase):
         self.assertFalse(self.hub.test("other-session"))
         self.assertTrue(self.hub.test("owner-session"))
         self.assertFalse(self.hub.test("owner-session"))
-        self.assertEqual(self.poll(), {"cursor": 1, "count": 0, "test_count": 1, "sound": False})
+        self.assertEqual(self.poll(), {"cursor": 1, "count": 0, "test_count": 1, "handoff_count": 0, "sound": False})
+
+    def test_handoff_has_separate_generic_alert_and_respects_preferences(self):
+        self.publish()
+        self.assertTrue(self.hub.publish_handoff(user_id=1, identity=('seller', 'chat', 1)))
+        self.assertFalse(self.hub.publish_handoff(user_id=1, identity=('seller', 'chat', 1)))
+        self.assertFalse(self.hub.publish_handoff(user_id=2, identity=('seller', 'chat', 2)))
+        self.assertEqual(self.poll()['handoff_count'], 1)
+        self.assertEqual(self.poll()['count'], 1)
+        self.assertEqual(self.poll()['test_count'], 0)
+        self.assertNotIn('chat', repr(self.hub.events))
+        self.hub.configure('owner-session', 1, False)
+        self.assertFalse(self.hub.publish_handoff(user_id=1, identity=('seller', 'chat', 2)))
 
     def test_sound_toggle_preserves_queue_and_cursor(self):
         self.publish()

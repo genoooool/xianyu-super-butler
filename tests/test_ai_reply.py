@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from app.ai_reply_engine import AIReplyEngine
+from app.services.human_handoff import HandoffReply
 from app.reply_server import _public_ai_reply_settings
 
 
@@ -32,7 +33,7 @@ class AIReplyEngineTests(unittest.TestCase):
         ):
             result = self.engine.generate_reply('怎么使用', {'title': '测试', 'price': 100},
                                                 'chat', 'account', 'buyer', 'item', True)
-        self.assertIsNone(result)
+        self.assertIsInstance(result, HandoffReply)
         model.assert_not_called()
 
     def test_reply_is_normalized_and_limited(self):
@@ -41,6 +42,24 @@ class AIReplyEngineTests(unittest.TestCase):
 
         self.assertEqual(reply, "你好， 现货可拍。")
         self.assertEqual(len(long_reply), 300)
+
+    def test_known_uncertainty_and_empty_model_result_are_typed_handoffs(self):
+        with (
+            patch.object(self.engine, 'is_ai_enabled', return_value=True),
+            patch.object(self.engine, 'detect_intent', return_value='default'),
+            patch.object(self.engine, 'save_conversation'),
+            patch.object(self.engine, '_get_recent_user_messages', return_value=[]),
+            patch.object(self.engine, 'get_bargain_count', return_value=0),
+            patch.object(self.engine, '_generate_with_retry') as model,
+            patch('app.ai_reply_engine.db_manager.get_ai_reply_settings', return_value={'ai_enabled': True, 'context_enabled': False}),
+            patch('app.ai_reply_engine.KnowledgeService.for_reply', return_value=[{
+                'id': 1, 'source': '店铺资料', 'topic': '使用方法', 'content': '请按说明操作。'
+            }]),
+        ):
+            for response in ['', '__HUMAN_HANDOFF__', '答' * 400 + '__HUMAN_HANDOFF__']:
+                model.return_value = response
+                result = self.engine.generate_reply('怎么用', {}, 'chat', 'a', 'buyer', 'item', True)
+                self.assertIsInstance(result, HandoffReply)
 
     def test_generate_reply_uses_model_without_logging_or_returning_empty_content(self):
         settings = {

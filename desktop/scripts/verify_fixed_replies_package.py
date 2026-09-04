@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import secrets
 import socket
+import sqlite3
 import subprocess
 import time
 
@@ -69,8 +70,30 @@ def main():
             assert len(restored)==1 and restored[0]['image_ids']==[asset['id']]
             assert session.get(base+'/ai-knowledge/images/'+asset['id']).content==image.content
             assert session.post(base+'/chat/send/not-owned',json=dict(cid='test',to_user_id='nobody',image_ids=[asset['id']])).status_code==403
+            assert session.get(base+'/chat/handoffs').json()['entries']==[]
+            # This is the isolated smoke DB, never a production account. Seed local-only state AFTER backup tests.
+            db=sqlite3.connect(args.output_dir/'data/xianyu_data.db')
+            owner_id=db.execute("SELECT id FROM users WHERE username='admin'").fetchone()[0]
+            db.execute("INSERT INTO cookies(id,value,user_id) VALUES('offline-handoff','not-a-platform-cookie',?)",(owner_id,))
+            db.execute("INSERT INTO cookie_status(cookie_id,enabled) VALUES('offline-handoff',0)")
+            db.execute("INSERT INTO ai_reply_settings(cookie_id,ai_enabled) VALUES('offline-handoff',0)")
+            db.execute("""INSERT INTO chat_human_handoffs
+                (owner_id,cookie_id,chat_id,revision,pending,reason,buyer_id,buyer_name,item_id,created_ms,send_status)
+                VALUES(?,'offline-handoff','offline-chat',1,1,'unclear','nobody','离线测试','',1,'unknown')""",(owner_id,))
+            db.commit()
+            entries=session.get(base+'/chat/handoffs').json()['entries']
+            assert len(entries)==1 and entries[0]['send_status']=='unknown'
+            endpoint='/chat/handoffs/offline-handoff/offline-chat/resume'
+            assert session.post(base+endpoint,json={'revision':2}).status_code==409
+            post(endpoint,json={'revision':1})
+            assert session.post(base+endpoint,json={'revision':1}).status_code==409
+            assert session.get(base+'/chat/handoffs').json()['entries']==[]
+            assert db.execute("SELECT ai_enabled FROM ai_reply_settings WHERE cookie_id='offline-handoff'").fetchone()[0]==0
+            assert db.execute("SELECT pending,revision FROM chat_human_handoffs").fetchone()==(0,2)
+            assert db.execute('PRAGMA quick_check').fetchone()[0]=='ok'
+            db.close()
             report=dict(status='passed',ready_seconds=ready,packaged_qa_image=True,phrase_image=True,backup_roundtrip=True,
-                        private_asset_guard=True,buyer_messages_sent=0)
+                        private_asset_guard=True,handoff_resume=True,ai_enablement_unchanged=True,buyer_messages_sent=0)
             (args.output_dir/'result.json').write_text(json.dumps(report,indent=2)+'\n')
             print(json.dumps(report),flush=True)
         finally:

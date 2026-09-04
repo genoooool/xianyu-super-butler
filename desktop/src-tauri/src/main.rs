@@ -56,7 +56,48 @@ struct NotificationBatch {
     count: u32,
     test_count: u32,
     #[serde(default)]
+    handoff_count: u32,
+    #[serde(default)]
     sound: bool,
+}
+
+impl NotificationBatch {
+    fn presentation(&self) -> Option<(&'static str, String)> {
+        if self.handoff_count > 0 {
+            Some(("闲鱼工作台 · 待人工处理", format!(
+                "有 {} 个会话需要你接手，自动回复已暂停。请打开消息中心处理。", self.handoff_count)))
+        } else if self.count > 0 {
+            Some(("闲鱼工作台 · 新消息", format!("收到 {} 条新消息，请打开消息中心查看。", self.count)))
+        } else if self.test_count > 0 {
+            Some(("闲鱼工作台 · 测试提醒", "这是一条测试提醒，没有向买家发送消息。".to_owned()))
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod notification_batch_tests {
+    use super::NotificationBatch;
+
+    #[test]
+    fn takeover_is_distinct_and_prioritized_over_message_alerts() {
+        let batch = NotificationBatch { cursor: 3, count: 1, test_count: 1, handoff_count: 2, sound: true };
+        let (title, body) = batch.presentation().unwrap();
+        assert_eq!(title, "闲鱼工作台 · 待人工处理");
+        assert!(body.contains("2 个会话"));
+        assert!(body.contains("自动回复已暂停"));
+        assert!(batch.sound);
+    }
+
+    #[test]
+    fn empty_batches_are_silent_and_messages_keep_their_title() {
+        let batch = NotificationBatch { cursor: 0, count: 0, test_count: 0, handoff_count: 0, sound: false };
+        assert_eq!(batch.handoff_count, 0);
+        assert!(batch.presentation().is_none());
+        let message = NotificationBatch { count: 1, ..batch };
+        assert_eq!(message.presentation().unwrap().0, "闲鱼工作台 · 新消息");
+    }
 }
 
 async fn watch_notifications(
@@ -79,17 +120,7 @@ async fn watch_notifications(
         if let Ok(response) = response {
             if response.status().is_success() {
                 if let Ok(batch) = response.json::<NotificationBatch>().await {
-                    if batch.count > 0 || batch.test_count > 0 {
-                        let body = if batch.count > 0 {
-                            format!("收到 {} 条新消息，请打开消息中心查看。", batch.count)
-                        } else {
-                            "这是一条测试提醒，没有向买家发送消息。".to_owned()
-                        };
-                        let title = if batch.count > 0 {
-                            "闲鱼工作台 · 新消息"
-                        } else {
-                            "闲鱼工作台 · 测试提醒"
-                        };
+                    if let Some((title, body)) = batch.presentation() {
                         // Submitted is not a delivery receipt: macOS permission/DND decides visibility.
                         if show_notification(&app, title, &body, batch.sound).is_err() {
                             tokio::time::sleep(Duration::from_secs(5)).await;

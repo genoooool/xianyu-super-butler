@@ -742,6 +742,8 @@ class DBManager:
             initialize_knowledge_schema(cursor)
             from app.services.quick_phrases import initialize_schema as initialize_quick_phrases
             initialize_quick_phrases(cursor)
+            from app.services.human_handoff import initialize_schema as initialize_handoffs
+            initialize_handoffs(cursor)
 
             self.conn.commit()
             logger.info("数据库初始化完成")

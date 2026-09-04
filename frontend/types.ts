@@ -439,6 +439,17 @@ export interface ChatConversation {
   unreadCount: number;
 }
 
+export interface HumanHandoff {
+  cookie_id: string;
+  chat_id: string;
+  revision: number;
+  buyer_id: string;
+  buyer_name: string;
+  item_id: string;
+  created_ms: number;
+  send_status: 'unknown' | 'confirmed' | 'withheld';
+}
+
 export interface ChatMessage {
   messageId: string;
   senderId: string;

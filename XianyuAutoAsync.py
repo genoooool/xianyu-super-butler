@@ -97,7 +97,7 @@ class AutoReplyPauseManager:
 
         if time.time() >= pause_until:
             # 暂停时间已过，移除记录
-            del self.paused_chats[key]
+            self.paused_chats.pop(key, None)
             return False
 
         return True
@@ -110,6 +110,9 @@ class AutoReplyPauseManager:
 
         return max(0, int(pause_until - time.time()))
 
+    def resume_chat(self, chat_id: str, cookie_id: str):
+        self.paused_chats.pop(self._key(cookie_id, str(chat_id).split('@', 1)[0]), None)
+
     def cleanup_expired_pauses(self):
         """清理已过期的暂停记录"""
         current_time = time.time()
@@ -117,7 +120,7 @@ class AutoReplyPauseManager:
                    if current_time >= pause_until]
 
         for key in expired:
-            del self.paused_chats[key]
+            self.paused_chats.pop(key, None)
 
 
 # 全局暂停管理器实例
@@ -4748,7 +4751,8 @@ class XianyuLive:
 
         except Exception as e:
             logger.error(f"获取AI回复失败: {self._safe_str(e)}")
-            return None
+            from app.services.human_handoff import HandoffReply
+            return HandoffReply('ai_failed')
 
     def _parse_price(self, price_str: str) -> float:
         """解析价格字符串为数字"""
@@ -9552,6 +9556,36 @@ class XianyuLive:
             # 构造用户URL
             user_url = f'https://www.goofish.com/personal?userId={send_user_id}'
 
+            from app.services.human_handoff import HumanHandoffs, HandoffReply, HANDOFF_REPLY, request_handoff, message_timestamp
+            handoffs = HumanHandoffs(db_manager)
+            with db_manager.lock:
+                owner = handoffs.owner(self.cookie_id)
+            state = handoffs.state(owner, self.cookie_id, chat_id)
+            revision = state['revision'] if state else 0
+            message_ms = message_timestamp(message_data)
+            if not handoffs.can_reply(owner, self.cookie_id, chat_id, revision, message_ms):
+                self._add_reply_decision_log(message_data, **log_context, process_status='skipped',
+                    decision_reason='human_handoff_paused', reply_strategy='none', send_status='unknown')
+                return
+
+            def base_send_allowed():
+                return (AUTO_REPLY.get('enabled', True)
+                        and not pause_manager.is_chat_paused(chat_id, self.cookie_id)
+                        and not db_manager.matches_message_filter(self.cookie_id, send_message, 'skip_reply'))
+
+            def current_reply_allowed():
+                return base_send_allowed() and handoffs.can_reply(owner, self.cookie_id, chat_id, revision, message_ms)
+
+            async def transfer_to_human(reason, check):
+                ticket = await request_handoff(self, db_manager, owner_id=owner, chat_id=chat_id,
+                    buyer_id=send_user_id, buyer_name=send_user_name, item_id=item_id, reason=reason,
+                    revision=revision, message_ms=message_ms, check=check,
+                    notify=not db_manager.matches_message_filter(self.cookie_id, send_message, 'skip_notify'))
+                if ticket:
+                    self._add_reply_decision_log(message_data, **log_context, process_status='success',
+                        decision_reason='human_handoff_' + ticket['send_status'], reply_strategy='none',
+                        reply_text=HANDOFF_REPLY, send_status='success' if ticket['send_status'] == 'confirmed' else 'unknown')
+
             # Fixed QA owns its payload. The classifier receives questions/IDs, never answer text or images.
             from app.services.fixed_replies import FixedReplies, FixedDecision, CLARIFY_REPLY
             from app.services.reply_delivery import send_parts
@@ -9565,9 +9599,16 @@ class XianyuLive:
                 decision = await asyncio.to_thread(fixed.choose, self.cookie_id, item_id, send_message, classifier)
             except Exception:
                 decision = FixedDecision('clarify', reason='rule_load_failed')
+            if decision.status == 'clarify':
+                def handoff_allowed():
+                    return (base_send_allowed()
+                            and (not decision.semantic or db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled'))
+                            and (not decision.snapshot or fixed.revalidate(decision, self.cookie_id, item_id)))
+                await transfer_to_human(decision.reason, handoff_allowed)
+                return
             if decision.status != 'no_match':
                 def fixed_send_allowed():
-                    if not AUTO_REPLY.get('enabled', True) or pause_manager.is_chat_paused(chat_id, self.cookie_id):
+                    if not current_reply_allowed():
                         return False
                     if db_manager.matches_message_filter(self.cookie_id, send_message, 'skip_reply'):
                         return False
@@ -9591,9 +9632,7 @@ class XianyuLive:
                 return  # Failure/ambiguity is terminal: never continue to API/default replies.
 
             def fallback_send_allowed():
-                return (not pause_manager.is_chat_paused(chat_id, self.cookie_id)
-                        and AUTO_REPLY.get('enabled', True)
-                        and not db_manager.matches_message_filter(self.cookie_id, send_message, 'skip_reply')
+                return (current_reply_allowed()
                         and fixed.revalidate(decision, self.cookie_id, item_id)
                         and (not decision.semantic or db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled')))
 
@@ -9640,7 +9679,8 @@ class XianyuLive:
                     # 2. 关键词匹配失败，如果AI开关打开，尝试AI回复
                     reply = await self.get_ai_reply(send_user_name, send_user_id, send_message, item_id, chat_id)
                     if not reply and db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled'):
-                        reply = CLARIFY_REPLY  # Rejection/timeout is not permission to send a fallback promise.
+                        # None means intentionally skipped (newer message/system event/disabled), not uncertainty.
+                        return
                     if reply:
                         reply_source = 'AI'  # 标记为AI回复
                         reply_strategy = "ai"
@@ -9784,7 +9824,13 @@ class XianyuLive:
                 if reply_strategy == 'ai' and not db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled'):
                     return
                 if reply_strategy == 'ai' and '__IMAGE_SEND__' in reply:
-                    reply = CLARIFY_REPLY
+                    reply = HandoffReply('invalid_ai_attachment')
+                if reply_strategy == 'ai' and (isinstance(reply, HandoffReply) or reply == HANDOFF_REPLY):
+                    def ai_handoff_allowed():
+                        return (base_send_allowed() and fixed.revalidate(decision, self.cookie_id, item_id)
+                                and db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled'))
+                    await transfer_to_human(getattr(reply, 'reason', 'ai_uncertain'), ai_handoff_allowed)
+                    return
                 if not log_id:
                     log_id = self._add_reply_decision_log(
                         message_data,
@@ -9821,6 +9867,8 @@ class XianyuLive:
                             send_status="failed",
                         )
                         logger.error(f"图片发送失败: {self._safe_str(e)}")
+                        if not fallback_send_allowed():
+                            return
                         await self.send_msg(websocket, chat_id, send_user_id, "抱歉，图片发送失败，请稍后重试。")
                         msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
                         logger.error(f"[{msg_time}] 【{reply_source}图片发送失败】用户: {send_user_name} (ID: {send_user_id}), 商品({item_id})")

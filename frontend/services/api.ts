@@ -7,7 +7,7 @@ import {
   DeliveryBlockRule, PersonalBlacklistEntry, MessageNotification,
   NotificationChannel, NotificationChannelType, RiskControlLog, SystemLog,
   MessageFilter, MessageFilterType, AutoReplyLog
-  , ChatAccount, ChatConversation, ChatMessage, ProductMaterial,
+  , ChatAccount, ChatConversation, ChatMessage, HumanHandoff, ProductMaterial,
   ProductFilterRule, ProductDeleteRule, AutomationTaskRun,
   ProductAutomationResult, ProductDeletePreview, QuickPhrase,
   AnnouncementPayload
@@ -1021,6 +1021,15 @@ export const getAutoReplyLogs = async (params: {
 };
 
 // Xianyu IM
+export const getHumanHandoffs = async (): Promise<HumanHandoff[]> => {
+  const result = await get<{ entries: HumanHandoff[] }>('/chat/handoffs');
+  return result.entries;
+};
+
+export const resumeHumanHandoff = async (entry: HumanHandoff): Promise<{ success: boolean; message: string }> => {
+  return post(`/chat/handoffs/${encodeURIComponent(entry.cookie_id)}/${encodeURIComponent(entry.chat_id)}/resume`, { revision: entry.revision });
+};
+
 export const getChatAccounts = async (): Promise<ChatAccount[]> => {
   const response = await get<{ success: boolean; data: ChatAccount[] }>('/chat/accounts');
   return response.data || [];

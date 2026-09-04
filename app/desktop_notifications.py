@@ -74,13 +74,28 @@ class DesktopNotifications:
         self.sequence += 1
         self.events.append((self.sequence, now, test))
 
+    def publish_handoff(self, *, user_id, identity):
+        """Separate generic alert; ordinary-message dedup must not swallow a takeover."""
+        with self.lock:
+            if not self.session or self.session[1] != user_id:
+                return False
+            now = self.clock()
+            key = hashlib.sha256(json.dumps(['handoff', identity], ensure_ascii=False).encode()).hexdigest()
+            if key in self.seen:
+                return False
+            self.seen[key] = now
+            while len(self.seen) > self.limit:
+                self.seen.popitem(last=False)
+            self._append(now, 'handoff')
+            return True
+
     def test(self, token):
         with self.lock:
             if not self.session or self.session[0] != token:
                 return False
             # A double click must not flood the notification center.
             now = self.clock()
-            if any(test and stamp > now - 5 for _, stamp, test in self.events):
+            if any(test is True and stamp > now - 5 for _, stamp, test in self.events):
                 return False
             self._append(now, True)
             return True
@@ -93,8 +108,9 @@ class DesktopNotifications:
                 self.sound = False
                 self.events.clear()
             eligible = [event for event in self.events if event[0] > after and event[1] >= now - self.ttl]
-            return {"cursor": self.sequence, "count": sum(not e[2] for e in eligible),
-                    "test_count": sum(e[2] for e in eligible), "sound": self.sound}
+            return {"cursor": self.sequence, "count": sum(e[2] is False for e in eligible),
+                    "test_count": sum(e[2] is True for e in eligible),
+                    "handoff_count": sum(e[2] == 'handoff' for e in eligible), "sound": self.sound}
 
 
 desktop_notifications = DesktopNotifications()

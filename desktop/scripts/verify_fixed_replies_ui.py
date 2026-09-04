@@ -21,6 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from app.routers.ai_knowledge import create_ai_knowledge_router
 from app.services.ai_knowledge import KnowledgeService, initialize_schema
 from app.services.quick_phrases import QuickPhrases, initialize_schema as phrases_schema
+from app.services.human_handoff import HumanHandoffs, initialize_schema as handoff_schema
+from app.routers.human_handoff import create_human_handoff_router
 
 
 def main():
@@ -38,11 +40,14 @@ def main():
         sort_order INTEGER DEFAULT 0,enabled INTEGER DEFAULT 1,use_count INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);''')
     initialize_schema(db.conn.cursor()); phrases_schema(db.conn.cursor()); db.conn.commit()
+    handoff_schema(db.conn.cursor()); db.conn.commit()
+    handoffs=HumanHandoffs(db)
     phrases=QuickPhrases(db)
     def user(authorization: str=Header(default='')):
         if authorization!='Bearer offline-test': raise HTTPException(401)
         return {'user_id':1}
     app=FastAPI(); app.include_router(create_ai_knowledge_router(user,db))
+    app.include_router(create_human_handoff_router(user,db,lambda *_: None))
     def add_get(path,value): app.get(path)(lambda: value)
     add_get('/verify',dict(authenticated=True,user_id=1,is_admin=False))
     add_get('/system-settings/public',dict(registration_enabled='false'))
@@ -56,8 +61,11 @@ def main():
     add_get('/keywords-with-item-id/{cookie_id}',[])
     add_get('/system-settings',{})
     add_get('/message-filters',dict(data=[]))
-    add_get('/chat/accounts',dict(data=[dict(accountId='a',displayName='测试店铺 A',connected=True)]))
-    add_get('/chat/conversations/{cookie_id}',dict(data=dict(conversations=[dict(cid='chat',otherUserId='buyer',otherUserName='离线测试买家',lastMessageSummary='想看报价图',lastMessageTime=1,unreadCount=1,itemId='one')],hasMore=False)))
+    add_get('/chat/accounts',dict(data=[dict(accountId='a',displayName='测试店铺 A',connected=True),dict(accountId='b',displayName='测试店铺 B',connected=False)]))
+    @app.get('/chat/conversations/{cookie_id}')
+    def conversations(cookie_id: str):
+        rows=[dict(cid='chat',otherUserId='buyer',otherUserName='离线测试买家',lastMessageSummary='想看报价图',lastMessageTime=1,unreadCount=1,itemId='one')] if cookie_id=='a' else []
+        return dict(data=dict(conversations=rows,hasMore=False))
     add_get('/chat/messages/{cookie_id}/{cid}',dict(data=dict(messages=[],hasMore=False)))
     @app.get('/quick-phrases')
     def list_phrases(include_disabled: bool=False): return dict(success=True,data=phrases.list(1,include_disabled))
@@ -155,6 +163,45 @@ def main():
             page.get_by_role('button',name='发送',exact=True).click()
             expect(page.locator('img[alt="回复图片"]:visible')).to_have_count(0)
             assert len(sends)==1 and sends[0]['text']=='' and len(sends[0]['image_ids'])==1
+
+            # Local takeover state must remain visible independently of unread counts/platform paging.
+            first=handoffs.begin(1,'a','chat',0,1,'unclear','buyer','离线测试买家','one')
+            handoffs.finish_send(first,'confirmed')
+            handoffs.begin(1,'a','not-in-platform-page',0,1,'unknown','buyer2','列表外买家','one')
+            handoffs.begin(1,'b','chat',0,1,'unknown','buyer','另一店买家','')
+            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_be_visible()
+            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_have_css('border-radius','9999px')
+            expect(page.get_by_text('转人工话术已收到平台发送回执。',exact=True)).to_be_visible()
+            while page.get_by_label('关闭提示',exact=True).count(): page.get_by_label('关闭提示',exact=True).first.click()
+            page.get_by_role('button',name='已处理，恢复自动回复').click(trial=True)
+            page.screenshot(path=str(args.output_dir/'handoff-dark.png'),animations='disabled')
+            page.reload()
+            page.get_by_role('button',name='消息中心',exact=True).click()
+            page.get_by_text('离线测试买家',exact=True).first.click()
+            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_be_visible()
+            page.emulate_media(color_scheme='light')
+            page.screenshot(path=str(args.output_dir/'handoff-light.png'))
+            page.get_by_role('button',name='已处理，恢复自动回复').click()
+            expect(page.get_by_role('alertdialog',name='恢复自动回复')).to_be_visible()
+            page.get_by_role('button',name='取消',exact=True).click()
+            assert len(handoffs.pending(1))==3
+            page.get_by_role('button',name='已处理，恢复自动回复').click()
+            page.get_by_role('button',name='确认恢复',exact=True).click()
+            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_have_count(0)
+            assert len(handoffs.pending(1))==2
+            page.get_by_text('列表外买家',exact=True).first.click()
+            expect(page.get_by_text('转人工话术发送结果未确认，请先查看原会话，避免重复发送。',exact=True)).to_be_visible()
+            page.set_viewport_size(dict(width=390,height=844))
+            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_be_visible()
+            while page.get_by_label('关闭提示',exact=True).count(): page.get_by_label('关闭提示',exact=True).first.click()
+            page.get_by_role('button',name='已处理，恢复自动回复').click(trial=True)
+            assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+            page.screenshot(path=str(args.output_dir/'handoff-mobile.png'),animations='disabled')
+            page.set_viewport_size(dict(width=1440,height=1000))
+            page.get_by_label('消息账号').select_option('b')
+            expect(page.get_by_text('另一店买家',exact=True).first).to_be_visible()
+            expect(page.get_by_text('列表外买家',exact=True)).to_have_count(0)
+            assert len(sends)==1, 'Resume must never send or replay a buyer message'
             assert not errors, errors
             assert not failed, failed
             print(json.dumps(dict(status='passed',qa_entries=len(KnowledgeService(db).list_entries(1)),phrases=len(phrases.list(1)),offline_send_requests=len(sends),console_errors=errors,http_errors=failed),ensure_ascii=False))
