@@ -56,6 +56,13 @@ class Fixture(unittest.TestCase):
 
 
 class ManualResumeTests(Fixture):
+    def test_observed_top_level_200_receipt_resumes_pending(self):
+        self.begin()
+        self.instance.send_im_text.return_value = {'code': 200, 'headers': {'mid': '12345 0'},
+                                                   'body': {'messageId': 'manual-1.PNM'}}
+        self.assertEqual(self.send()['handoff_auto_resume'], 'resumed')
+        self.clear.assert_called_once_with('chat', 'a', ['manual-1.PNM'])
+
     def test_confirmed_text_resumes_only_target_and_rejects_old_work(self):
         self.begin(); self.begin(cookie='b'); self.begin(chat='another')
         result = self.send(cid='chat@goofish', toid='buyer@goofish')

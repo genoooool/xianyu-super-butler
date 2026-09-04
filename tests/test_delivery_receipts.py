@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 METHODS = {
     '_handle_auto_delivery', 'can_auto_delivery', 'mark_delivery_sent',
     '_send_delivery_request', 'send_msg', 'send_image_msg', '_send_im_request',
-    '_resolve_im_response', '_fail_pending_im_requests',
+    '_resolve_im_response', '_fail_pending_im_requests', 'send_im_text',
 }
 
 
@@ -205,6 +205,39 @@ class ReceiptFlowTests(unittest.IsolatedAsyncioTestCase):
                     await self.live.send_msg(self.live.ws, 'chat', 'buyer', 'CARD', wait_for_ack=True)
                 self.assertEqual(self.live._im_pending, {})
 
+    async def test_observed_top_level_success_allows_text_image_and_shipping(self):
+        self.parts = ['CARD-1', '__IMAGE_SEND__https://img.alicdn.com/card.png']
+        self.receipts = [dict(code=200, body=dict(messageId=f'offline-{i}.PNM')) for i in range(2)]
+        await self.automatic()
+        self.assertEqual(self.events, ['write', 'receipt', 'write', 'receipt', 'ship'])
+
+    async def test_top_level_negative_or_conflicting_receipts_stop_shipping(self):
+        for receipt in [dict(code=500, body={}), dict(code=500, headers=dict(code=200), body={}),
+                        dict(code=200, headers=dict(code=403), body={}),
+                        dict(code=200, body=dict(code=500)), dict(code=200, body=dict(success=False)),
+                        dict(code=200, body=dict(error='rejected')), dict(code=True, body={})]:
+            with self.subTest(receipt=receipt):
+                self.receipts = [receipt]
+                with self.assertRaises(RuntimeError):
+                    await self.live.send_msg(self.live.ws, 'chat', 'buyer', 'CARD', wait_for_ack=True)
+                self.live.auto_confirm.assert_not_awaited()
+
+    async def test_plain_text_uses_same_receipt_validation(self):
+        self.receipts = [dict(code=200, body=dict(code=200, messageId='offline.PNM'))]
+        response = await self.live.send_im_text('chat', 'buyer', 'hello')
+        self.assertEqual(response['body']['messageId'], 'offline.PNM')
+        self.receipts = [dict(code=500, body={})]
+        with self.assertRaises(RuntimeError):
+            await self.live.send_im_text('chat', 'buyer', 'hello')
+
+    async def test_receipt_strict_validation_never_accepts_malformed_or_body_only_success(self):
+        for response in [dict(code=200, headers=[] , body={}), dict(code=200, headers=None, body={}),
+                         dict(body=dict(code=200, messageId='not-proof')),
+                         dict(code=200, success=False, body={}), dict(code=200, error='denied', body={}),
+                         dict(code='unknown', headers=dict(code=200), body={})]:
+            with self.subTest(response=response), self.assertRaises(RuntimeError):
+                require_receipt(response, explicit_success=True)
+
     async def test_unrelated_receipt_does_not_release_delivery(self):
         self.receipts = [None]
         task = asyncio.create_task(self.automatic())
@@ -243,6 +276,12 @@ class ReceiptFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assert_unshipped()
 
     async def test_manual_full_delivery_uses_receipts(self):
+        result = await self.manual()
+        self.assertTrue(result['results'][0]['success'])
+        self.assertEqual(self.events, ['account-loop', 'write', 'receipt', 'ship'])
+
+    async def test_manual_full_delivery_accepts_observed_top_level_receipt(self):
+        self.receipts = [dict(code=200, body=dict(messageId='manual.PNM'))]
         result = await self.manual()
         self.assertTrue(result['results'][0]['success'])
         self.assertEqual(self.events, ['account-loop', 'write', 'receipt', 'ship'])

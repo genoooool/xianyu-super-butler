@@ -6706,12 +6706,7 @@ class XianyuLive:
         if ws is None or ws is not self.ws:
             raise ConnectionError("发货连接已改变，请先核对原订单，避免重复发卡")
         response = await self._send_im_request(message['lwp'], message['body'])
-        require_receipt(response)
-        headers = response.get('headers')
-        if not isinstance(headers, dict) or str(headers.get('code')) not in {'200', '0'}:
-            raise RuntimeError("卡券消息未获得明确成功回执，请先人工核对")
-        if response['body'].get('success') is False:
-            raise RuntimeError("平台拒绝卡券消息，请先人工核对")
+        require_receipt(response, explicit_success=True)
         return response
 
     async def send_msg(self, ws, cid, toid, text, *, wait_for_ack=False):
@@ -6899,10 +6894,8 @@ class XianyuLive:
                 },
             ],
         )
-        body = response.get("body", {}) if isinstance(response, dict) else {}
-        if isinstance(body, dict) and (body.get("reason") or body.get("code")):
-            reason = body.get("developerMessage") or body.get("reason") or body.get("code")
-            raise RuntimeError(str(reason))
+        from app.services.reply_delivery import require_receipt
+        require_receipt(response)
         return response
 
     async def init(self, ws):
@@ -9307,47 +9300,26 @@ class XianyuLive:
                     logger.info(f"【{self.cookie_id}】当前活跃消息处理任务数: {self.active_message_tasks}")
 
     def _extract_message_id(self, message_data: dict) -> str:
-        """
-        从消息数据中提取消息ID，用于去重
-        
-        Args:
-            message_data: 原始消息数据
-            
-        Returns:
-            消息ID字符串，如果无法提取则返回None
-        """
-        try:
-            # 尝试从 message['1']['10']['bizTag'] 中提取 messageId
-            if isinstance(message_data, dict) and "1" in message_data:
-                message_1 = message_data.get("1")
-                if isinstance(message_1, dict) and "10" in message_1:
-                    message_10 = message_1.get("10")
-                    if isinstance(message_10, dict) and "bizTag" in message_10:
-                        biz_tag = message_10.get("bizTag", "")
-                        if isinstance(biz_tag, str):
-                            # bizTag 是 JSON 字符串，格式如: '{"sourceId":"S:1","messageId":"984f323c719d4cd0a7b993a0769a33b6"}'
-                            try:
-                                import json
-                                biz_tag_dict = json.loads(biz_tag)
-                                if isinstance(biz_tag_dict, dict) and "messageId" in biz_tag_dict:
-                                    return biz_tag_dict.get("messageId")
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                        
-                        # 如果 bizTag 解析失败，尝试从 extJson 中提取
-                        if "extJson" in message_10:
-                            ext_json = message_10.get("extJson", "")
-                            if isinstance(ext_json, str):
-                                try:
-                                    import json
-                                    ext_json_dict = json.loads(ext_json)
-                                    if isinstance(ext_json_dict, dict) and "messageId" in ext_json_dict:
-                                        return ext_json_dict.get("messageId")
-                                except (json.JSONDecodeError, TypeError):
-                                    pass
-        except Exception as e:
-            logger.debug(f"【{self.cookie_id}】提取消息ID失败: {self._safe_str(e)}")
-        
+        """Extract identity from a DECODED message, never from its displayed text."""
+        def valid(value):
+            return (isinstance(value, (str, int)) and not isinstance(value, bool)
+                    and 0 < len(str(value).strip()) <= 128)
+
+        one = message_data.get('1') if isinstance(message_data, dict) else None
+        if not isinstance(one, dict):
+            return None
+        # Server message ID matches the send receipt and is stable across re-pushes.
+        if valid(one.get('3')):
+            return str(one['3']).strip()
+        detail = one.get('10')
+        if isinstance(detail, dict):
+            for field in ('bizTag', 'extJson'):
+                try:
+                    values = json.loads(detail.get(field, ''))
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(values, dict) and valid(values.get('messageId')):
+                    return str(values['messageId']).strip()
         return None
 
     def _add_reply_decision_log(self, message_data: dict, **fields):
@@ -9408,40 +9380,29 @@ class XianyuLive:
         """
         # 提取消息ID并检查是否已处理
         message_id = self._extract_message_id(message_data)
-        # 如果没有 messageId，使用备用标识（chat_id + send_message + 时间戳）
-        if not message_id:
-            try:
-                # 尝试从消息数据中提取时间戳
-                create_time = 0
-                if isinstance(message_data, dict) and "1" in message_data:
-                    message_1 = message_data.get("1")
-                    if isinstance(message_1, dict):
-                        create_time = message_1.get("5", 0)
-                # 使用组合键作为备用标识
-                message_id = f"{chat_id}_{send_message}_{create_time}"
-            except Exception:
-                # 如果提取失败，使用当前时间戳
-                message_id = f"{chat_id}_{send_message}_{int(time.time() * 1000)}"
+        # Same text may be a genuinely NEW buyer message (including pictures).
+        # Without reliable identity, do not collapse messages by content/time.
+        message_key = (str(chat_id), str(send_user_id), message_id) if message_id else None
         
         async with self.processed_message_ids_lock:
             current_time = time.time()
             
             # 检查消息是否已处理且未过期
-            if message_id in self.processed_message_ids:
-                last_process_time = self.processed_message_ids[message_id]
+            if message_key is not None and message_key in self.processed_message_ids:
+                last_process_time = self.processed_message_ids[message_key]
                 time_elapsed = current_time - last_process_time
                 
                 # 如果消息处理时间未超过1小时，跳过
                 if time_elapsed < self.message_expire_time:
-                    remaining_time = int(self.message_expire_time - time_elapsed)
-                    logger.warning(f"【{self.cookie_id}】消息ID {message_id[:50]}... 已处理过，距离可重复回复还需 {remaining_time} 秒")
+                    logger.info(f"【{self.cookie_id}】平台重复推送同一条消息，跳过；chat_id {chat_id}")
                     return
                 else:
                     # 超过1小时，可以重新处理
-                    logger.info(f"【{self.cookie_id}】消息ID {message_id[:50]}... 已超过 {int(time_elapsed/60)} 分钟，允许重新回复")
+                    logger.info(f"【{self.cookie_id}】消息去重记录已过期；chat_id {chat_id}")
             
             # 标记消息ID为已处理（更新或添加时间戳）
-            self.processed_message_ids[message_id] = current_time
+            if message_key is not None:
+                self.processed_message_ids[message_key] = current_time
             
             # 定期清理过期的消息ID
             if len(self.processed_message_ids) > self.processed_message_ids_max_size:
@@ -10500,7 +10461,7 @@ class XianyuLive:
             # 如果用户连续发送消息，等待用户停止发送后再回复最后一条消息
             await self._schedule_debounced_reply(
                 chat_id=chat_id,
-                message_data=message_data,
+                message_data=message,
                 websocket=websocket,
                 send_user_name=send_user_name,
                 send_user_id=send_user_id,

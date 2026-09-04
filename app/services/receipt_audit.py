@@ -27,6 +27,13 @@ def status_code(value):
     return None
 
 
+def request_identifier(value):
+    # generate_mid() and platform responses include a space before the numeric suffix.
+    if isinstance(value, str) and re.fullmatch(r'\d{1,32} \d{1,6}', value):
+        return value
+    return identifier(value)
+
+
 @contextmanager
 def receipt_scope(order_id, flow, part):
     token = _scope.set(dict(order_id=identifier(order_id), flow=flow, part=part))
@@ -42,7 +49,7 @@ def im_fields(response):
     headers = response.get('headers')
     headers = headers if isinstance(headers, dict) else {}
     body = response.get('body')
-    fields = dict(response_mid=identifier(headers.get('mid')), header_code=status_code(headers.get('code')),
+    fields = dict(response_mid=request_identifier(headers.get('mid')), header_code=status_code(headers.get('code')),
                   top_level_code=status_code(response.get('code')),
                   body_type=type(body).__name__)
     if isinstance(body, dict):
@@ -54,7 +61,10 @@ def im_fields(response):
         require_receipt(response, explicit_success=True)
         fields['assessment'] = 'success_by_current_rule'
     except Exception:
-        rejected = (fields['header_code'] is not None and str(fields['header_code']) not in {'200', '0'})
+        rejected = any(fields[key] is not None and str(fields[key]) not in {'200', '0'}
+                       for key in ('header_code', 'top_level_code'))
+        rejected = rejected or any(layer.get('reason') or layer.get('error') or layer.get('success') is False
+                                   for layer in (response, headers))
         if isinstance(body, dict):
             rejected = rejected or bool(body.get('reason') or body.get('error')) or body.get('success') is False
             rejected = rejected or (fields['body_code'] is not None and str(fields['body_code']) not in {'200', '0'})
@@ -71,7 +81,7 @@ def record_im(cookie_id, request_mid, event, response=None, error=None):
     try:
         if event not in {'started', 'response', 'unknown'}:
             return
-        document = dict(kind='im_send', event=event, cookie_id=identifier(cookie_id), request_mid=identifier(request_mid))
+        document = dict(kind='im_send', event=event, cookie_id=identifier(cookie_id), request_mid=request_identifier(request_mid))
         scope = _scope.get()
         if scope:
             document.update(order_id=scope['order_id'],

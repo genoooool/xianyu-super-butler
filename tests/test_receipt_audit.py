@@ -12,6 +12,18 @@ import test_delivery_receipts as flows
 
 
 class ReceiptAuditTests(unittest.TestCase):
+    def test_real_mid_format_and_top_level_code_are_audited(self):
+        with patch.object(audit, '_emit') as emit:
+            audit.record_im('shop', '123456789 0', 'response', response={
+                'code': 200, 'headers': {'mid': '123456789 0'}, 'body': {'messageId': 'offline.PNM'}})
+        doc = emit.call_args.args[0]
+        self.assertTrue(doc['matched'])
+        self.assertEqual(doc['request_mid'], '123456789 0')
+        self.assertEqual(doc['assessment'], 'success_by_current_rule')
+        self.assertEqual(audit.im_fields({'code': 500, 'body': {}})['assessment'], 'rejected')
+        for malformed in ('secret token', '123\n0', '12 0\n', '12\t0', '1'*200+' 0'):
+            self.assertIsNone(audit.request_identifier(malformed))
+
     def test_success_failure_and_unknown_are_explicit(self):
         cases = [({'headers': {'code': 200}, 'body': {}}, 'success_by_current_rule'),
                  ({'headers': {'code': 403}, 'body': {}}, 'rejected'),

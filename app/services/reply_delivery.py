@@ -15,15 +15,20 @@ class ReplyDeliveryError(RuntimeError):
 def require_receipt(response, *, explicit_success=False):
     if not isinstance(response, dict):
         raise RuntimeError("未收到发送回执")
-    headers = response.get('headers') or {}
-    if str(headers.get('code', '200')) not in {'200', '0'}:
-        raise RuntimeError("平台拒绝发送")
-    body = response.get('body')
-    if not isinstance(body, dict) or body.get('reason') or body.get('error'):
+    headers = response.get('headers', {})
+    if not isinstance(headers, dict):
         raise RuntimeError("发送回执无效")
-    if body.get('code') not in (None, 0, '0', 200, '200'):
-        raise RuntimeError("平台拒绝发送")
-    if explicit_success and (str(headers.get('code')) not in {'200', '0'} or body.get('success') is False):
+    body = response.get('body')
+    if not isinstance(body, dict):
+        raise RuntimeError("发送回执无效")
+    # Real IM responses put code at the TOP level; older adapters put it in headers.
+    # Recognize both, but never let one positive field hide a rejection elsewhere.
+    for layer in (response, headers, body):
+        if layer.get('reason') or layer.get('error') or layer.get('success') is False:
+            raise RuntimeError("平台拒绝发送")
+        if layer.get('code') is not None and str(layer['code']) not in {'200', '0'}:
+            raise RuntimeError("平台拒绝发送")
+    if explicit_success and not any(str(layer.get('code')) in {'200', '0'} for layer in (response, headers)):
         raise RuntimeError("未收到明确成功的发送回执")
 
 
