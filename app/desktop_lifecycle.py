@@ -127,11 +127,16 @@ def run_runtime_probe() -> int:
         browser = playwright.chromium.launch(channel="chromium", headless=True)
         browser.new_page().goto("about:blank")
         # A windowed Windows executable may have no stdout even when redirected.
-        Path(os.environ['XIANYU_RUNTIME_PROBE_REPORT']).write_text(
+        report = Path(os.environ['XIANYU_RUNTIME_PROBE_REPORT'])
+        report.write_text(
             json.dumps({"pid": os.getpid(), "worker_pid": worker.pid}), encoding='utf-8'
         )
         try:
             while True:
+                # Windows terminate() is a force kill, not SIGTERM. This
+                # offline-only marker exercises a cooperative interpreter exit.
+                if os.name == "nt" and report.with_suffix('.stop').is_file():
+                    return 0
                 time.sleep(0.25)
         finally:
             browser.close()

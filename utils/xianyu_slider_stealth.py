@@ -70,6 +70,7 @@ def find_chromium_executable() -> Optional[str]:
         'chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
         'chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium',
         'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
+        'chrome-win64/chrome.exe',
         'chrome-win/chrome.exe',
     )
     for root in roots:

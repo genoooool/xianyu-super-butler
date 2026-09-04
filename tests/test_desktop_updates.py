@@ -1,6 +1,8 @@
 import asyncio
 import json
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app.desktop_updates import DesktopUpdates, UpdateGate, UpdateBusy, APP_VERSION
@@ -9,14 +11,28 @@ from app.routers.desktop_updates import create_desktop_updates_router
 
 class UpdateTests(unittest.TestCase):
     def setUp(self):
+        platform = patch('app.routers.desktop_updates.sys', SimpleNamespace(platform='darwin'))
+        platform.start()
+        self.addCleanup(platform.stop)
         self.broker = DesktopUpdates()
         self.gate = UpdateGate()
         self.tokens = {'admin': {'is_admin': True}, 'user': {'is_admin': False}}
         app = FastAPI()
         app.include_router(create_desktop_updates_router(self.broker, self.gate, 'native-secret', lambda c: self.tokens.get(c.credentials)))
         self.client = TestClient(app)
+        self.addCleanup(self.client.close)
         self.admin = {'Authorization': 'Bearer admin'}
         self.native = {'X-Xianyu-Desktop-Token': 'native-secret'}
+
+    def test_windows_only_offers_manual_updates_and_never_queues_install(self):
+        with patch('app.routers.desktop_updates.sys', SimpleNamespace(platform='win32')):
+            status = self.client.get('/desktop/updates/status', headers=self.admin).json()
+            self.assertFalse(status['available'])
+            self.assertEqual(status['releases_url'], 'https://github.com/genoooool/xianyu-super-butler/releases')
+            for action in ('check', 'install'):
+                self.assertEqual(self.action(action, '1.0.2').status_code, 400)
+                self.assertIsNone(self.poll())
+            self.assertEqual(self.gate.until, 0)
 
     def action(self, action='check', version=''):
         return self.client.post('/desktop/updates/action', headers=self.admin, json={'action': action, 'version': version})

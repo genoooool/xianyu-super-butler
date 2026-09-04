@@ -46,6 +46,28 @@ class DesktopRuntimePathTests(unittest.TestCase):
 
 
 class ChromiumPathTests(unittest.TestCase):
+    def test_finds_current_windows_bundled_chromium_without_launching_or_downloading(self):
+        from types import SimpleNamespace
+        from utils import xianyu_slider_stealth as slider
+
+        root = Path(__file__).resolve().parents[1]
+        source = root / 'Start.py'
+        handler = next(node for node in ast.parse(source.read_text(encoding='utf-8')).body
+                       if isinstance(node, ast.FunctionDef) and node.name == '_check_and_install_playwright')
+        namespace = {'os': os, 'sys': SimpleNamespace(platform='win32'), 'Path': Path,
+                     '_OK': '', '_INFO': '', '_WARN': ''}
+        exec(compile(ast.Module(body=[handler], type_ignores=[]), str(source), 'exec'), namespace)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            executable = Path(temp_dir) / 'chromium-1234' / 'chrome-win64' / 'chrome.exe'
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b'binary')
+            with mock.patch.dict(os.environ, {'PLAYWRIGHT_BROWSERS_PATH': temp_dir}), mock.patch(
+                'playwright.sync_api.sync_playwright'
+            ) as launch:
+                self.assertEqual(str(executable), slider.find_chromium_executable())
+                self.assertTrue(namespace['_check_and_install_playwright']())
+                launch.assert_not_called()
+
     def test_finds_legacy_macos_playwright_chromium_layout(self):
         from utils import xianyu_slider_stealth as slider
 
@@ -88,7 +110,7 @@ class PackagedBackendSmokeTests(unittest.TestCase):
         response = mock.MagicMock()
         response.__enter__.return_value.status = 200
         with mock.patch.object(smoke_backend, "parse_args", return_value=mock.Mock(
-            target="test-target", playwright_dir=".", backend="signed-app-backend"
+            target="test-target", playwright_dir=".", backend="signed-app-backend", work_dir=None
         )), mock.patch.object(Path, "is_file", return_value=True), mock.patch.object(
             smoke_backend.subprocess, "Popen", return_value=process
         ) as popen, mock.patch.object(

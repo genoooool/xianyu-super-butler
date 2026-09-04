@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import http.cookiejar
 import os
 import secrets
@@ -68,6 +69,8 @@ def verify_runtime_lifecycle(backend: Path, env: dict, work_dir: Path, abrupt: b
             # must clean up the backend, worker, resource tracker and browser.
             if abrupt:
                 process.kill()
+            elif os.name == 'nt':
+                report_path.with_suffix('.stop').touch()
             else:
                 process.terminate()
             process.wait(timeout=12)
@@ -96,6 +99,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target", required=True)
     parser.add_argument("--backend", help="Test the final signed sidecar inside an application bundle")
     parser.add_argument("--playwright-dir", required=True)
+    parser.add_argument("--work-dir", type=Path, help="Fresh evidence directory to preserve logs and empty test data")
     return parser.parse_args()
 
 
@@ -159,12 +163,25 @@ def main() -> int:
         raise FileNotFoundError(backend)
 
     port = free_port()
-    with tempfile.TemporaryDirectory(prefix="xianyu-desktop-smoke-") as temp_dir:
+    work_dir = getattr(args, 'work_dir', None)
+    if work_dir is not None:
+        work_dir = work_dir.resolve()
+        work_dir.mkdir(parents=True, exist_ok=False)
+    workspace = (contextlib.nullcontext(str(work_dir)) if work_dir is not None
+                 else tempfile.TemporaryDirectory(prefix="xianyu-desktop-smoke-"))
+    with workspace as temp_dir:
         env = os.environ.copy()
+        # A packaging probe must not inherit a developer's resource override
+        # or live account/database selection from the surrounding terminal.
+        env.pop('XIANYU_RESOURCE_DIR', None)
         env.update(
             {
                 "XIANYU_DESKTOP": "1",
+                "XIANYU_DESKTOP_SMOKE": "1",
                 "XIANYU_DATA_DIR": temp_dir,
+                "DB_PATH": str(Path(temp_dir) / 'data' / 'xianyu_data.db'),
+                "COOKIES_STR": "",
+                "ADMIN_PASSWORD": secrets.token_urlsafe(32),
                 "XIANYU_DESKTOP_TOKEN": secrets.token_urlsafe(32),
                 "PLAYWRIGHT_BROWSERS_PATH": str(Path(args.playwright_dir).resolve()),
                 "API_HOST": "127.0.0.1",

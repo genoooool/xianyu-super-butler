@@ -78,7 +78,7 @@ export default function SoftwareUpdate() {
         </button>
       </div>
       <div className="mt-6 border-t border-gray-200 pt-5" role="status">
-        <p className="font-semibold text-gray-900">{labels[status?.phase || 'idle'] || '读取更新状态中…'}</p>
+        <p className="font-semibold text-gray-900">{status?.available === false ? '请手动下载并安装对应系统的版本' : labels[status?.phase || 'idle'] || '读取更新状态中…'}</p>
         {status?.latest_version && <p className="mt-2 text-sm text-gray-500">发布版本 {status.latest_version}</p>}
         {status?.notes && <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-7 text-gray-600">{status.notes}</p>}
         {status?.phase === 'downloading' && <div className="mt-4">
@@ -87,7 +87,7 @@ export default function SoftwareUpdate() {
         </div>}
       </div>
       {(error || status?.error) && <p role="alert" className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{error || status?.error}</p>}
-      {status?.available === false && <p className="mt-4 text-sm text-gray-500">应用内升级仅支持 macOS 桌面版；其他环境请从 Releases 下载。</p>}
+      {status?.available === false && <p className="mt-4 text-sm text-gray-500">应用内升级仅支持 macOS 桌面版。Windows 请从 Releases 下载 Setup.exe，退出工作台后运行安装包。</p>}
       {status?.phase === 'available' && <button type="button" disabled={isBusy} onClick={() => setConfirm(true)}
         className="ios-btn-primary mt-5 inline-flex items-center gap-2 rounded-full px-5 py-3"><Download className="h-4 w-4" />下载并升级</button>}
       <div className="mt-6 flex gap-2 text-xs leading-6 text-gray-500">

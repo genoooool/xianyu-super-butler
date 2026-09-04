@@ -62,3 +62,16 @@ class DesktopCredentialsTests(unittest.TestCase):
             self.assertFalse(client.get('/desktop/credentials').json()['available'])
             self.assertEqual(client.delete('/desktop/credentials').status_code, 409)
         factory.assert_not_called()
+
+    def test_windows_hides_saved_login_and_never_initializes_a_store(self):
+        factory = Mock()
+        app = FastAPI()
+        with patch('app.routers.desktop_credentials.sys', SimpleNamespace(platform='win32')):
+            db = SimpleNamespace(verify_user_password=lambda username, password: True)
+            app.include_router(create_desktop_credentials_router('bootstrap', 'local_session', lambda: {'username': 'test'}, db, store_factory=factory))
+        with TestClient(app) as client:
+            client.cookies.set('local_session', 'bootstrap')
+            self.assertEqual(client.get('/desktop/credentials').json(), {'available': False, 'saved': False})
+            self.assertEqual(client.post('/desktop/credentials', json={'username': 'test', 'password': 'test'}).status_code, 409)
+            self.assertEqual(client.delete('/desktop/credentials').status_code, 409)
+        factory.assert_not_called()
