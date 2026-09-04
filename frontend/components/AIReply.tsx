@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   Eye,
   EyeOff,
-  ExternalLink,
   Loader2,
   MessageSquareText,
   Play,
@@ -24,16 +23,14 @@ import AIKnowledge from './AIKnowledge';
 import { useAccountReplyControl } from './useAccountReplyControl';
 import { AccountReplySwitch } from './AccountReplySwitch';
 
-// 自建中转，兼容 OpenAI 接口，每天可领免费额度，省去用户自己找服务商配密钥。
-const FREE_TOKEN_BASE_URL = 'https://ai.corleom.com/v1';
-const FREE_TOKEN_HOME = 'https://ai.corleom.com';
+const DEFAULT_BASE_URL = 'https://ai.corleom.com/v1';
 
 const defaultSettings: AIReplySettings = {
   ai_enabled: false,
   model_name: 'qwen-plus',
   api_key: '',
   api_key_configured: false,
-  base_url: FREE_TOKEN_BASE_URL,
+  base_url: DEFAULT_BASE_URL,
   user_agent: 'codex_cli_rs/0.0.0 (Hermes Agent)',
   max_discount_percent: 10,
   max_discount_amount: 100,
@@ -215,34 +212,13 @@ const AIReply: React.FC = () => {
                   icon={Bot}
                 />
                 <div className="grid gap-4 p-5 md:grid-cols-2">
-                  <div className="md:col-span-2 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-brand-200 bg-brand-50 px-4 py-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-gray-800">
-                        没有 API Key？每天可免费领取额度
-                      </p>
-                      <p className="mt-0.5 text-xs text-gray-600">
-                        兼容 OpenAI 接口，注册后把密钥填到下方即可直接用。
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <a
-                        href={FREE_TOKEN_HOME}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-semibold text-brand-ink hover:bg-brand-600"
-                      >
-                        免费领取 token
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </a>
-                    </div>
-                  </div>
                   <label>
                     <span className="mb-1.5 block text-sm font-semibold text-gray-700">接口地址</span>
                     <input
                       value={settings.base_url}
                       onChange={event => updateSetting('base_url', event.target.value)}
                       className="ios-input w-full rounded-md px-3 py-2.5 text-sm"
-                      placeholder={FREE_TOKEN_BASE_URL}
+                      placeholder={DEFAULT_BASE_URL}
                     />
                   </label>
                   <label>

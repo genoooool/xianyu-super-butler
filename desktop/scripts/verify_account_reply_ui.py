@@ -92,6 +92,14 @@ def main():
             page.goto(base)
             master = page.get_by_role('switch', name='店铺自动回复总开关')
             expect(master).to_have_attribute('aria-checked','true')
+            expect(page.get_by_text('没有 API Key？每天可免费领取额度',exact=True)).to_have_count(0)
+            expect(page.get_by_role('link',name='免费领取 token')).to_have_count(0)
+            expect(page.get_by_label('接口地址',exact=True)).to_have_value('https://offline.invalid/v1')
+            expect(page.get_by_label('模型名称',exact=True)).to_have_value('offline')
+            expect(page.get_by_placeholder('输入新密钥以替换',exact=True)).to_be_visible()
+            page.emulate_media(color_scheme='dark')
+            page.screenshot(path=str(args.output_dir/'ai-model-without-promotion.png'))
+            page.emulate_media(color_scheme='light')
             # A delayed pre-toggle GET cannot overwrite the confirmed OFF.
             held = dict(started=threading.Event(), release=threading.Event()); delay['next']=held
             page.evaluate('window.__controls.forEach(fn=>fn())')
