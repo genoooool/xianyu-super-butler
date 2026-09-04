@@ -7,9 +7,31 @@ from app.services.reply_assets import ReplyAssets
 
 
 class ReplyDeliveryError(RuntimeError):
-    def __init__(self, sent_count, cause):
+    def __init__(self, sent_count, cause, receipts=()):
         self.sent_count = sent_count
+        self.cause = cause
+        self.receipts = tuple(receipts)
         super().__init__(f"已确认发送{sent_count}部分，其余未发送或结果未确认；请先检查聊天记录，不要直接重复发送。({type(cause).__name__})")
+
+
+class ReceiptRejected(RuntimeError):
+    """Only an unambiguous, non-server-error rejection permits a manual retry."""
+    def __init__(self, response):
+        layers = [response, response.get('headers', {}), response.get('body', {})]
+        body = response.get('body', {})
+        data = body.get('data', {})
+        if isinstance(data, dict):
+            layers.append(data)
+        ids = any(layer.get('messageId') or layer.get('msgId')
+                  for layer in (body, data) if isinstance(layer, dict))
+        positive = ids or any(layer.get('success') is True or str(layer.get('code')) in {'200', '0'}
+                              for layer in layers)
+        codes = [str(layer['code']) for layer in layers if layer.get('code') is not None]
+        # Unknown codes, server errors, timeout and duplicate/conflict responses
+        # may have followed a successful write. Only known rejection codes qualify.
+        self.retryable = not positive and bool(codes) and all(
+            code in {'400', '401', '403', '404', '413', '415', '422', '429'} for code in codes)
+        super().__init__('平台拒绝发送')
 
 
 def require_receipt(response, *, explicit_success=False):
@@ -25,9 +47,9 @@ def require_receipt(response, *, explicit_success=False):
     # Recognize both, but never let one positive field hide a rejection elsewhere.
     for layer in (response, headers, body):
         if layer.get('reason') or layer.get('error') or layer.get('success') is False:
-            raise RuntimeError("平台拒绝发送")
+            raise ReceiptRejected(response)
         if layer.get('code') is not None and str(layer['code']) not in {'200', '0'}:
-            raise RuntimeError("平台拒绝发送")
+            raise ReceiptRejected(response)
     if explicit_success and not any(str(layer.get('code')) in {'200', '0'} for layer in (response, headers)):
         raise RuntimeError("未收到明确成功的发送回执")
 
@@ -39,6 +61,7 @@ async def send_parts(instance, db, owner_id, cid, toid, text, images, check=lamb
     if not isinstance(text, str) or len(text) > 2000 or (not text and not images) or '__IMAGE_SEND__' in text:
         raise ValueError("无效的固定回复")
     sent = 0
+    receipts = []
 
     def guard():
         if not check():
@@ -62,6 +85,7 @@ async def send_parts(instance, db, owner_id, cid, toid, text, images, check=lamb
             response = await instance.send_im_text(cid, toid, text)
             require_receipt(response, explicit_success=explicit_receipt)
             sent += 1
+            receipts.append(response)
             if on_receipt:
                 on_receipt(response)
         if uploaded:
@@ -74,8 +98,9 @@ async def send_parts(instance, db, owner_id, cid, toid, text, images, check=lamb
                 dict(actualReceivers=[toid if '@goofish' in toid else toid+'@goofish', str(instance.myid)+'@goofish'])])
             require_receipt(response, explicit_success=explicit_receipt)
             sent += 1
+            receipts.append(response)
             if on_receipt:
                 on_receipt(response)
         return sent
     except Exception as error:
-        raise ReplyDeliveryError(sent, error) from error
+        raise ReplyDeliveryError(sent, error, receipts) from error

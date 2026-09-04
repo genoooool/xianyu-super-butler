@@ -21,6 +21,7 @@ from openai import OpenAI
 from app.db_manager import db_manager
 from app.services.ai_knowledge import KnowledgeService
 from app.services.human_handoff import HandoffReply, HANDOFF_MARKER, HANDOFF_REPLY
+from app.services.conversation_safety import CONVERSATION_PROMPT, conversation_answer, requires_business_facts
 
 
 class ReasoningBudgetExhausted(RuntimeError):
@@ -670,6 +671,11 @@ class AIReplyEngine:
                 # 4. 获取议价次数
                 bargain_count = max(0, self.get_bargain_count(chat_id, cookie_id) - (1 if intent == "price" else 0))
 
+                knowledge = KnowledgeService(db_manager).for_reply(cookie_id, item_id, message)
+                if not knowledge and (intent == 'price' or requires_business_facts(message)):
+                    # Even the bargain-limit refusal is an unsupported price claim without facts.
+                    return HandoffReply('no_business_evidence')
+
                 # 5. 检查议价轮数限制 (P0-1 竞争条件风险点 - 遵照指示未修改)
                 if intent == "price":
                     max_bargain_rounds = settings.get('max_bargain_rounds', 3)
@@ -711,15 +717,16 @@ class AIReplyEngine:
 - 不得编造库存、规格、物流或售后承诺。没有明确SKU价格与数量对应关系时，引导买家点击商品购买页面查看对应报价，不自行换算。
 - 付款、发货、退款、收货和订单完成由系统订单状态与自动发货规则处理。
 - 未经系统确认，不得声称上述操作已成功，也不得要求买家重复付款。
-- 如果资料无法解答、互相矛盾或仍拿不准，只输出 __HUMAN_HANDOFF__，由程序转人工；不要猜测，也不要自行承诺已转接。
+- 正常问候、致谢、表达理解及询问需求可以自主简短交流，不因资料未提及这些话术就转人工。
+- 涉及具体商品/业务事实或承诺时，若资料无法解答、互相矛盾或仍拿不准，只输出 __HUMAN_HANDOFF__，由程序转人工；不要猜测，也不要自行承诺已转接。
 - 直接输出适合发送给买家的简短回复，不要解释规则。"""
 
-                knowledge = KnowledgeService(db_manager).for_reply(cookie_id, item_id, message)
                 if knowledge:
                     logger.info("AI知识引用: 账号={}, 资料编号={}", cookie_id, [entry["id"] for entry in knowledge])
                 else:
-                    # With no fixed QA and no knowledge, do not invent an answer from a listing price.
-                    return HandoffReply('no_knowledge')
+                    # One existing model call, with an explicit intent/answer contract.
+                    # Do not feed a placeholder listing price into this conversation lane.
+                    safety_prompt = CONVERSATION_PROMPT
                 from app.services.ai_context_budget import build_bounded_messages
                 messages = build_bounded_messages(
                     system_prompt, safety_prompt, knowledge, [
@@ -734,6 +741,11 @@ class AIReplyEngine:
 
                 if isinstance(reply, str) and HANDOFF_MARKER in reply:
                     return HandoffReply('ai_uncertain')
+
+                if not knowledge:
+                    reply = conversation_answer(reply)
+                    if not reply:
+                        return HandoffReply('conversation_needs_facts')
 
                 reply = self._normalize_reply(reply)
                 if not reply:

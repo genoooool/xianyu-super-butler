@@ -276,7 +276,7 @@ class ManualRouteTests(Fixture):
         self.runner = AsyncMock(side_effect=run)
         env = dict(_get_owned_chat_account=owned, _run_on_account_loop=self.runner,
                    db_manager=self.db, _clear_handoff_timed_pause=self.clear,
-                   HTTPException=HTTPException, logger=Mock())
+                   HTTPException=HTTPException, logger=Mock(), account_request_dedup=Mock())
         exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])), str(source), 'exec'), env)
         self.route = env['send_chat_message']
 

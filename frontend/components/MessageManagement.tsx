@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  CircleAlert,
   Image,
   Inbox,
   Loader2,
@@ -44,7 +45,8 @@ import {
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
 import { EmptyState, SectionHeader } from './ui';
-import { ReplyImagePicker } from './ReplyMedia';
+import { ReplyImage, ReplyImagePicker } from './ReplyMedia';
+import { CHAT_WINDOW_SIZE, mergeChatMessages, trimConfirmedOutbox, type OutgoingMessage } from '../services/chatOutbox';
 import { ConversationAiSwitch } from './ConversationAiSwitch';
 import { ChatProductImage } from './ChatProductImage';
 import { useConversationReplyControl } from './useConversationReplyControl';
@@ -188,6 +190,11 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
   notificationChatRef.current = notificationChat;
   const handledNavigation = useRef('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const messagesDestinationRef = useRef('');
+  const messagesRequestRef = useRef(0);
+  const [outbox, setOutbox] = useState<OutgoingMessage[]>([]);
+  const sendBusyRef = useRef(false);
+  const retryPromptRef = useRef(false);
   const [query, setQuery] = useState('');
   const [searchInputUnlocked, setSearchInputUnlocked] = useState(false);
   const [searchInputName] = useState(
@@ -202,6 +209,9 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
   const [showImagePicker, setShowImagePicker] = useState(false);
   const destinationRef = useRef('');
   const destination = `${activeAccountId}:${activeCid}`;
+  const displayMessages = useMemo(() => mergeChatMessages(
+    messagesDestinationRef.current === destination ? messages : [], outbox, activeAccountId, activeCid,
+  ).slice(-CHAT_WINDOW_SIZE), [messages, outbox, destination]);
   destinationRef.current = destination;
   useEffect(() => {
     setDraft(''); setDraftImages([]); setShowImagePicker(false); setImageUploading(false);
@@ -410,6 +420,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
   };
 
   const loadMessages = async (silent = false) => {
+    const requestId = ++messagesRequestRef.current;
     if (!activeAccountId || !activeCid) {
       setMessages([]);
       return;
@@ -417,7 +428,8 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
     if (!silent) setMessagesLoading(true);
     try {
       const result = await getChatMessages(activeAccountId, activeCid);
-      if (destinationRef.current !== `${activeAccountId}:${activeCid}`) return;
+      if (destinationRef.current !== `${activeAccountId}:${activeCid}` || requestId !== messagesRequestRef.current) return;
+      messagesDestinationRef.current = `${activeAccountId}:${activeCid}`;
       setMessages(result.messages || []);
       const target = notificationChatRef.current;
       if (target?.accountId === activeAccountId && target.conversation.cid === activeCid) {
@@ -430,7 +442,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
     } catch (error) {
       if (!silent && destinationRef.current === `${activeAccountId}:${activeCid}`) notify(`加载聊天记录失败：${(error as Error).message}`, 'error');
     } finally {
-      if (!silent && destinationRef.current === `${activeAccountId}:${activeCid}`) setMessagesLoading(false);
+      if (requestId === messagesRequestRef.current && destinationRef.current === `${activeAccountId}:${activeCid}`) setMessagesLoading(false);
     }
   };
 
@@ -531,7 +543,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [displayMessages]);
 
   useEffect(() => {
     // Chromium 和部分密码管理器会无视 autocomplete="off"，把本站保存的
@@ -567,30 +579,65 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
     void useQuickPhrase(phrase.id).catch(() => undefined);
   };
 
-  const sendMessage = async () => {
-    const text = draft;
-    if ((!text.trim() && !draftImages.length) || !activeConversation || !activeAccountId || sending || imageUploading) return;
-    const sendingTo = destination;
+  const deliverMessage = async (entry: OutgoingMessage) => {
+    if (sendBusyRef.current) return;
+    sendBusyRef.current = true;
     setSending(true);
+    // Invalidate pre-send readers immediately, including a GET already in flight.
+    ++messagesRequestRef.current;
+    setOutbox(current => current.map(value => value.messageId === entry.messageId
+      ? { ...value, status: 'sending' } : value));
     try {
-      const result = await sendChatMessage(activeAccountId, {
-        cid: activeConversation.cid,
-        to_user_id: activeConversation.otherUserId,
-        text,
-        image_ids: draftImages,
+      const result = await sendChatMessage(entry.accountId, {
+        cid: entry.cid, to_user_id: entry.toUserId, text: entry.text, image_ids: entry.imageIds,
       });
-      if (!result.success) throw new Error(result.message || '未确认发送结果');
-      if (destinationRef.current === sendingTo) {
-        setDraft(''); setDraftImages([]); setShowImagePicker(false);
-        await Promise.all([loadMessages(true), loadConversations(true)]);
+      const status = result.success ? 'sent'
+        : result.data?.status === 'failed' && result.data.retryable === true ? 'failed' : 'unconfirmed';
+      const receiptIds = result.data?.messageIds || (result.data?.messageId ? [result.data.messageId] : []);
+      setOutbox(current => trimConfirmedOutbox(current.map(value => value.messageId === entry.messageId
+        ? { ...value, status, receiptIds } : value)));
+      if (destinationRef.current === `${entry.accountId}:${entry.cid}`) {
+        // Receipt feedback does not wait for platform history or conversation refresh.
+        void loadMessages(true);
+        void loadConversations(true);
       }
-      notify('消息已发送', 'success');
-    } catch (error) {
-      notify(`发送未确认：${(error as Error).message}。请先检查原会话，避免重复发送。`, 'error');
+    } catch {
+      // HTTP errors do not prove non-delivery, including 502 and timeouts.
+      setOutbox(current => current.map(value => value.messageId === entry.messageId
+        ? { ...value, status: 'unconfirmed' } : value));
     } finally {
+      sendBusyRef.current = false;
       setSending(false);
       setControlRefresh((value) => value + 1);
     }
+  };
+
+  const sendMessage = async () => {
+    if ((!draft.trim() && !draftImages.length) || !activeConversation || !activeAccount?.connected
+      || sendBusyRef.current || imageUploading) return;
+    const entry: OutgoingMessage = {
+      messageId: `local-${crypto.randomUUID()}`, senderId: activeAccount.xianyuUserId || '', senderName: '',
+      isSelf: true, type: draftImages.length ? 'image' : 'text', text: draft, images: [], time: Date.now(),
+      accountId: activeAccountId, cid: activeConversation.cid, toUserId: activeConversation.otherUserId,
+      toUserName: activeConversation.otherUserName || activeConversation.otherUserId,
+      imageIds: [...draftImages], status: 'sending', receiptIds: [],
+    };
+    setOutbox(current => [...current, entry]);
+    // The original payload remains in the bubble, not in an easily double-sent draft.
+    setDraft(''); setDraftImages([]); setShowImagePicker(false);
+    await deliverMessage(entry);
+  };
+
+  const retryMessage = async (entry: OutgoingMessage) => {
+    if (entry.status !== 'failed' || sendBusyRef.current || retryPromptRef.current || !activeAccount?.connected) return;
+    retryPromptRef.current = true;
+    try {
+      const confirmed = await confirmAction(
+        `平台已明确拒绝这条消息。是否将原消息重新发送给“${entry.toUserName}”？${entry.imageIds.length ? `（含 ${entry.imageIds.length} 张图片）` : ''}`,
+        { title: '重新发送消息', confirmLabel: '重新发送', danger: false },
+      );
+      if (confirmed && destinationRef.current === `${entry.accountId}:${entry.cid}`) await deliverMessage(entry);
+    } finally { retryPromptRef.current = false; }
   };
 
   const createFilters = async () => {
@@ -868,20 +915,21 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--app-bg)] px-4 py-6 sm:px-8">
-              {messagesLoading && messages.length === 0 ? (
+              {messagesLoading && displayMessages.length === 0 ? (
                 <div className="flex h-full items-center justify-center">
                   <Loader2 className="h-6 w-6 animate-spin text-[#d6b600]" />
                 </div>
               ) : (
                 <div className="mx-auto max-w-4xl space-y-4">
-                  {messages.map((message, index) => {
-                    const previous = messages[index - 1];
+                  {displayMessages.map((message, index) => {
+                    const previous = displayMessages[index - 1];
                     const showTime = !previous || Math.abs(message.time - previous.time) > 300_000;
                     const senderLabel = message.isSelf
                       ? accountName(activeAccount)
                       : activeConversation.otherUserName || activeConversation.otherUserId;
                     return (
-                      <div key={message.messageId || `${message.time}-${index}`}>
+                      <div key={message.messageId || `${message.time}-${index}`} data-message-id={message.messageId}
+                        data-send-status={message.outgoing?.status}>
                         {showTime && (
                           <p className="mb-3 text-center text-[11px] text-[var(--text-soft)]">
                             {formatTimestamp(message.time)}
@@ -893,9 +941,16 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
                             senderLabel,
                             'h-9 w-9 shrink-0 rounded-full'
                           )}
-                          <div className={`max-w-[76%] rounded-md px-3.5 py-2.5 text-sm leading-6 ${
+                          {message.outgoing?.status === 'failed' && (
+                            <button type="button" aria-label="发送失败，点击重新发送" title="发送失败，点击重新发送"
+                              disabled={sending || !activeAccount?.connected} onClick={() => void retryMessage(message.outgoing!)}
+                              className="mt-3 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-red-500 text-sm font-bold text-white disabled:opacity-50">!</button>
+                          )}
+                          <div className="min-w-0 max-w-[76%]">
+                          <div className={`rounded-md px-3.5 py-2.5 text-sm leading-6 ${
                             message.isSelf ? 'bg-[var(--brand)] text-[var(--brand-ink)]' : 'bg-[var(--surface-strong)] text-[var(--text)]'
                           }`}>
+                            {message.outgoing?.imageIds.map(id => <ReplyImage key={id} id={id} />)}
                             {message.images.map((url) => (
                               <img
                                 key={url}
@@ -908,6 +963,14 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
                               <p className="whitespace-pre-wrap break-words">{message.text}</p>
                             )}
                           </div>
+                          {message.outgoing && <p role="status" className={`mt-1.5 flex items-center justify-end gap-1 text-[11px] leading-4 ${
+                            message.outgoing.status === 'failed' ? 'text-red-500' : message.outgoing.status === 'unconfirmed'
+                              ? 'text-amber-600 dark:text-amber-400' : 'text-[var(--text-soft)]'}`}>
+                            {message.outgoing.status === 'sending' && <Loader2 aria-hidden="true" size={11} className="animate-spin" />}
+                            {message.outgoing.status === 'unconfirmed' && <CircleAlert aria-hidden="true" size={12} />}
+                            {{ sending: '发送中…', sent: '已发送', failed: '发送失败', unconfirmed: '发送未确认，请核对原会话，勿重复发送' }[message.outgoing.status]}
+                          </p>}
+                          </div>
                           {message.isSelf && renderAvatar(
                             activeAccount?.avatarUrl,
                             senderLabel,
@@ -917,7 +980,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
                       </div>
                     );
                   })}
-                  {messages.length === 0 && !messagesLoading && (
+                  {displayMessages.length === 0 && !messagesLoading && (
                     <p className="py-16 text-center text-sm text-[var(--text-soft)]">暂无聊天记录</p>
                   )}
                   <div ref={messagesEndRef} />

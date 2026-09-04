@@ -1248,8 +1248,30 @@ class _AccountRequestDedup:
 
     @staticmethod
     def _looks_throttled(result) -> bool:
-        text = str(result)
-        return 'flow controled' in text or 'FAIL_SYS_FLOW_LIMIT' in text or '429' in text
+        if not isinstance(result, dict):
+            return False
+        # Inspect protocol status only, never buyer text, message IDs or nested cards.
+        layers = [result] + [result[name] for name in ('headers', 'body', 'data')
+                             if isinstance(result.get(name), dict)]
+        for layer in layers:
+            if str(layer.get('code')) == '429':
+                return True
+            for name in ('reason', 'error', 'ret'):
+                value = layer.get(name)
+                values = value if isinstance(value, list) else [value]
+                if any(isinstance(entry, str) and ('flow controled' in entry.lower()
+                       or 'FAIL_SYS_FLOW_LIMIT' in entry) for entry in values):
+                    return True
+        return False
+
+    def invalidate_chat(self, cookie_id: str, cid: str) -> None:
+        cid = cid.split('@', 1)[0]
+        prefixes = (f'messages|{cookie_id}|{cid}|', f'messages|{cookie_id}|{cid}@goofish|',
+                    f'conversations|{cookie_id}|')
+        for entries in (self._cache, self._pending):
+            for key in list(entries):
+                if key.startswith(prefixes):
+                    entries.pop(key, None)  # Do not cancel existing readers.
 
     def _prune(self) -> None:
         now = time.monotonic()
@@ -1271,13 +1293,15 @@ class _AccountRequestDedup:
         self._pending[key] = task
         try:
             result = await task
+            # A send invalidates both the cache and the identity of older readers.
+            if self._pending.get(key) is task:
+                ttl = self.THROTTLED_TTL if self._looks_throttled(result) else self.NORMAL_TTL
+                self._cache[key] = (time.monotonic() + ttl, result)
+                self._prune()
+            return result
         finally:
-            self._pending.pop(key, None)
-
-        ttl = self.THROTTLED_TTL if self._looks_throttled(result) else self.NORMAL_TTL
-        self._cache[key] = (time.monotonic() + ttl, result)
-        self._prune()
-        return result
+            if self._pending.get(key) is task:
+                self._pending.pop(key, None)
 
 
 account_request_dedup = _AccountRequestDedup()
@@ -1499,7 +1523,7 @@ async def send_chat_message(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     _get_owned_chat_account(cookie_id, current_user)
-    from app.services.manual_reply import send_manual_reply
+    from app.services.manual_reply import send_manual_reply_outcome
     if request.image_ids:
         from app.services.reply_assets import ReplyAssets
         try:
@@ -1508,14 +1532,17 @@ async def send_chat_message(
             raise HTTPException(400, str(error)) from error
     elif not request.text.strip():
         raise HTTPException(400, '消息不能为空')
-    result = await _run_on_account_loop(cookie_id, lambda instance: send_manual_reply(
-        instance, db_manager, current_user['user_id'], request.cid, request.to_user_id,
-        request.text, request.image_ids, _clear_handoff_timed_pause))
+    try:
+        result = await _run_on_account_loop(cookie_id, lambda instance: send_manual_reply_outcome(
+            instance, db_manager, current_user['user_id'], request.cid, request.to_user_id,
+            request.text, request.image_ids, _clear_handoff_timed_pause))
+    finally:
+        account_request_dedup.invalidate_chat(cookie_id, request.cid.split('@', 1)[0])
     logger.info(
         f"【{cookie_id}】后台用户 {current_user.get('username')} 人工发送闲鱼消息，"
         f"会话={request.cid}, 对方={request.to_user_id}, 长度={len(request.text)}"
     )
-    return {"success": True, "message": "已收到发送回执", "data": result}
+    return result
 
 
 @app.post('/send-message', response_model=SendMessageResponse)

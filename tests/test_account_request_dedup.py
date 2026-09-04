@@ -58,6 +58,49 @@ class ConnectionAliveTests(unittest.TestCase):
 
 
 class RequestDedupTests(unittest.IsolatedAsyncioTestCase):
+    def test_message_ids_and_customer_content_are_not_throttle_errors(self):
+        for result in ({'userMessageModels': [{'messageId': '429123', 'text': 'flow controled'}]},
+                       {'data': {'messageId': '1429429', 'text': '429 FAIL_SYS_FLOW_LIMIT'}},
+                       {'code': 200, 'body': {'messageId': '429.anything'}}):
+            self.assertFalse(_AccountRequestDedup._looks_throttled(result))
+        for result in ({'code': 429}, {'body': {'reason': 'flow controled'}},
+                       {'ret': ['FAIL_SYS_FLOW_LIMIT::limit']}):
+            self.assertTrue(_AccountRequestDedup._looks_throttled(result))
+
+    async def test_send_invalidates_only_target_chat_and_store_list(self):
+        dedup = _AccountRequestDedup()
+        async def factory(): return 'old'
+        keys = ['messages|a|chat|None|50', 'messages|a|chat@goofish|None|50',
+                'messages|a|another|None|50', 'messages|b|chat|None|50',
+                'conversations|a|None|30', 'conversations|b|None|30']
+        for key in keys: await dedup.run(key, factory)
+        dedup.invalidate_chat('a', 'chat')
+        self.assertEqual(set(dedup._cache), {keys[2], keys[3], keys[5]})
+
+    async def test_pre_send_reader_cannot_replace_fresh_cache_or_pending_task(self):
+        dedup = _AccountRequestDedup()
+        old_ready, new_ready = asyncio.Event(), asyncio.Event()
+        async def old():
+            await old_ready.wait()
+            return 'old'
+        async def new():
+            await new_ready.wait()
+            return 'new'
+        key = 'messages|a|chat|None|50'
+        old_task = asyncio.create_task(dedup.run(key, old))
+        await asyncio.sleep(0)
+        dedup.invalidate_chat('a', 'chat')
+        new_task = asyncio.create_task(dedup.run(key, new))
+        await asyncio.sleep(0)
+        pending = dedup._pending[key]
+        old_ready.set()
+        self.assertEqual(await old_task, 'old')
+        self.assertIs(dedup._pending[key], pending)
+        self.assertNotIn(key, dedup._cache)
+        new_ready.set()
+        self.assertEqual(await new_task, 'new')
+        self.assertEqual(dedup._cache[key][1], 'new')
+
     async def test_concurrent_identical_requests_run_once(self):
         dedup = _AccountRequestDedup()
         calls = 0

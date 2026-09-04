@@ -1078,6 +1078,9 @@ export const sendChatMessage = async (
   data: { cid: string; to_user_id: string; text: string; image_ids?: string[] }
 ): Promise<{ success: boolean; message: string; data?: {
   messageId?: string;
+  messageIds?: string[];
+  status?: 'sent' | 'failed' | 'unconfirmed';
+  retryable?: boolean;
   handoff_auto_resume?: 'resumed' | 'not_pending' | 'changed' | 'failed' | 'disabled';
   handoff_resumed_revision?: number;
 } }> => {

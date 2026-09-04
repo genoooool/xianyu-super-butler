@@ -233,7 +233,7 @@ def main():
             expect(page.locator('img[alt="回复图片"]:visible')).to_be_visible()
             page.screenshot(path=str(args.output_dir/'message-image-draft.png'))
             page.get_by_role('button',name='发送',exact=True).click()
-            expect(page.locator('img[alt="回复图片"]:visible')).to_have_count(0)
+            expect(page.locator('[data-send-status="sent"] img[alt="回复图片"]:visible')).to_have_count(1)
             composer=page.locator('footer:visible')
             expect(composer.get_by_label('添加回复图片')).to_have_count(0)
             assert len(sends)==1 and sends[0]['text']=='' and len(sends[0]['image_ids'])==1
@@ -241,7 +241,7 @@ def main():
             expect(ai_switch.locator('span').nth(1)).to_have_css('background-color','rgb(164, 91, 91)')
             page.screenshot(path=str(args.output_dir/'message-after-send.png'))
 
-            # The toolbar must reopen the picker; an unconfirmed send must retain the draft.
+            # Failed payloads now remain in bubbles, not in an easily repeated draft.
             composer.get_by_title('添加图片',exact=True).click()
             expect(composer.get_by_label('添加回复图片')).to_have_count(1)
             composer.get_by_label('添加回复图片').set_input_files(upload)
@@ -249,10 +249,10 @@ def main():
             composer.get_by_placeholder('输入消息',exact=True).fill('保留这份图片草稿')
             send_success=False
             composer.get_by_role('button',name='发送',exact=True).click()
-            expect(page.get_by_text('发送未确认：离线模拟未确认。请先检查原会话，避免重复发送。',exact=True)).to_be_visible()
-            expect(composer.get_by_placeholder('输入消息',exact=True)).to_have_value('保留这份图片草稿')
-            expect(composer.get_by_alt_text('回复图片')).to_be_visible()
-            expect(composer.get_by_label('添加回复图片')).to_have_count(1)
+            expect(page.locator('[data-send-status="unconfirmed"]')).to_have_count(1)
+            expect(page.locator('[data-send-status="unconfirmed"]').get_by_text('保留这份图片草稿',exact=True)).to_be_visible()
+            expect(composer.get_by_placeholder('输入消息',exact=True)).to_have_value('')
+            expect(composer.get_by_label('添加回复图片')).to_have_count(0)
             assert len(sends)==2 and len(sends[1]['image_ids'])==1
             page.screenshot(path=str(args.output_dir/'message-unconfirmed-draft.png'))
 
@@ -280,7 +280,7 @@ def main():
             # Failed and confirmed replies both keep automatic replies off.
             composer.get_by_placeholder('输入消息',exact=True).fill('人工回复未确认')
             composer.get_by_role('button',name='发送',exact=True).click()
-            expect(page.get_by_text('发送未确认：离线模拟未确认。请先检查原会话，避免重复发送。',exact=True)).to_be_visible()
+            expect(page.locator('[data-send-status="unconfirmed"]')).to_have_count(1)  # A page reload clears local outbox only.
             assert len(sends)==3 and len(handoffs.pending(1))==3
             expect(ai_switch).to_have_attribute('aria-checked','false')
             composer.get_by_placeholder('输入消息',exact=True).fill('')
