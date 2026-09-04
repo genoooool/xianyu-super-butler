@@ -72,6 +72,7 @@ async def fetch_order_detail_direct(
 
     api = XianyuSellerAPI(cookie_id, cookies_str)
     result: Dict[str, Any] = {}
+    seller_verified = False
     try:
         # 成交额、状态、买家和收货信息
         try:
@@ -80,6 +81,7 @@ async def fetch_order_detail_direct(
                 parsed = parse_sold_order(item)
                 if parsed.get("order_id") == str(order_id):
                     result.update(parsed)
+                    seller_verified = True
                     break
         except SellerApiError as exc:
             logger.debug(f"【{cookie_id}】订单 {order_id} 列表查询失败: {exc}")
@@ -149,6 +151,8 @@ async def fetch_order_detail_direct(
     result["order_time"] = result.get("created_at") or ""
     result["order_status"] = normalize_order_status("", result.get("status_text"))
     result["from_seller_api"] = True
+    # order.detail 对买家也可见；只有 sold.get 的精确匹配才是卖家归属证据。
+    result["seller_verified"] = seller_verified
     return result
 
 

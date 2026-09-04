@@ -1571,6 +1571,26 @@ class XianyuLive:
             "[你关闭了订单，钱款已原路退返]": "cancelled",
         }.get(str(event_text).strip())
 
+    def _can_manage_seller_order(self, order_id, item_id=None, seller_record=None):
+        """订单号/付款文案本身不证明卖家身份，不让买家推送进入卖出订单缓存。"""
+        from app.db_manager import db_manager
+
+        existing = db_manager.get_order_by_id(order_id)
+        if existing:
+            if str(existing.get('cookie_id')) != str(self.cookie_id):
+                return False
+            if item_id and existing.get('item_id') and str(item_id) != str(existing['item_id']):
+                return False
+            if getattr(self, 'myid', None) and existing.get('buyer_id') == self.myid:
+                return False
+            return True
+        if seller_record and str(seller_record.get('order_id')) == str(order_id):
+            if getattr(self, 'myid', None) and seller_record.get('buyer_id') == self.myid:
+                return False
+            return not (item_id and seller_record.get('item_id')
+                        and str(item_id) != str(seller_record['item_id']))
+        return bool(item_id and db_manager.get_item_info(self.cookie_id, item_id))
+
     def _save_order_event_snapshot(
         self,
         order_id: str,
@@ -1615,7 +1635,13 @@ class XianyuLive:
             receiver_phone = None
             receiver_address = None
             real_values = self._pending_order_real_values.pop(order_id, None)
+            if not self._can_manage_seller_order(order_id, item_id, real_values):
+                logger.info(f"【{self.cookie_id}】跳过未确认卖家归属的订单快照: {order_id}")
+                return False
             if real_values:
+                # 推送发送人未必是买家，已验证的卖出记录优先。
+                item_id = real_values.get('item_id') or item_id
+                buyer_id = real_values.get('buyer_id') or buyer_id
                 amount = real_values.get("amount") or None
                 buy_num = real_values.get("buy_num")
                 auction_price = real_values.get("auction_price") or None
@@ -5775,10 +5801,11 @@ class XianyuLive:
     async def fetch_order_detail_info(self, order_id: str, item_id: str = None, buyer_id: str = None, debug_headless: bool = None):
         """获取订单详情信息（使用独立的锁机制，不受延迟锁影响）"""
         # 使用独立的订单详情锁，不与自动发货锁冲突
-        order_detail_lock = self._order_detail_locks[order_id]
+        order_key = (self.cookie_id, order_id)
+        order_detail_lock = self._order_detail_locks[order_key]
 
         # 记录订单详情锁的使用时间
-        self._order_detail_lock_times[order_id] = time.time()
+        self._order_detail_lock_times[order_key] = time.time()
 
         async with order_detail_lock:
             logger.info(f"🔍 【{self.cookie_id}】获取订单详情锁 {order_id}，开始处理...")
@@ -5790,6 +5817,11 @@ class XianyuLive:
                 from utils.order_detail_fetcher import fetch_order_detail_simple
                 from app.db_manager import db_manager
 
+                existing = db_manager.get_order_by_id(order_id)
+                if existing and str(existing.get('cookie_id')) != str(self.cookie_id):
+                    logger.warning(f"【{self.cookie_id}】拒绝读取其他账号的订单详情: {order_id}")
+                    return None
+
                 # 获取当前账号的cookie字符串
                 cookie_string = self.cookies_str
                 logger.warning(f"【{self.cookie_id}】使用Cookie长度: {len(cookie_string) if cookie_string else 0}")
@@ -5797,6 +5829,7 @@ class XianyuLive:
                 # 优先走卖家端接口直连：一次两个 HTTP 请求即可拿到成交额、规格和
                 # 收货信息，无需启动浏览器。缺规格时说明接口没覆盖，再回退抓页面。
                 result = None
+                direct = None
                 try:
                     from utils.seller_order_sync import fetch_order_detail_direct
 
@@ -5816,6 +5849,17 @@ class XianyuLive:
                         f"{self._safe_str(exc)}"
                     )
 
+                seller_record = direct if direct and direct.get('seller_verified') is True else None
+                if not self._can_manage_seller_order(order_id, item_id, seller_record):
+                    logger.info(f"【{self.cookie_id}】未确认订单卖家归属，跳过详情和缓存: {order_id}")
+                    return None
+                if seller_record:
+                    item_id = seller_record.get('item_id') or item_id
+                    buyer_id = seller_record.get('buyer_id') or buyer_id
+                elif existing:
+                    item_id = existing.get('item_id') or item_id
+                    buyer_id = existing.get('buyer_id') or buyer_id
+
                 if not result:
                     # 确定是否使用有头模式（调试用）
                     headless_mode = True if debug_headless is None else debug_headless
@@ -5823,7 +5867,9 @@ class XianyuLive:
                         logger.info(f"【{self.cookie_id}】🖥️ 启用有头模式进行调试")
 
                     # 异步获取订单详情（使用当前账号的cookie）
-                    result = await fetch_order_detail_simple(order_id, cookie_string, headless=headless_mode)
+                    result = await fetch_order_detail_simple(
+                        order_id, cookie_string, headless=headless_mode, cookie_id=self.cookie_id
+                    )
 
                 if result:
                     logger.info(f"【{self.cookie_id}】订单详情获取成功: {order_id}")
@@ -5865,6 +5911,7 @@ class XianyuLive:
                         cookie_info = db_manager.get_cookie_by_id(self.cookie_id)
                         if not cookie_info:
                             logger.warning(f"Cookie ID {self.cookie_id} 不存在于cookies表中，丢弃订单 {order_id}")
+                            return None
                         else:
                             # 先保存订单基本信息（包含时间和收货人信息）
                             success = db_manager.insert_or_update_order(
@@ -5873,9 +5920,11 @@ class XianyuLive:
                                 buyer_id=buyer_id,
                                 spec_name=spec_name,
                                 spec_value=spec_value,
-                                quantity=quantity,
-                                amount=amount,
-                                order_status=result.get('order_status'),  # 添加订单状态
+                                quantity=quantity or None,
+                                amount=amount or None,
+                                # SKU 补充接口没有成交状态时，保留付款快照，不覆盖为 unknown。
+                                order_status=(result.get('order_status')
+                                              if result.get('order_status') != 'unknown' else None),
                                 cookie_id=self.cookie_id,
                                 created_at=order_time,
                                 receiver_name=receiver_name,
@@ -5917,9 +5966,11 @@ class XianyuLive:
                                 print(f"💾 【{self.cookie_id}】订单 {order_id} 信息已保存到数据库")
                             else:
                                 logger.warning(f"【{self.cookie_id}】订单信息保存失败: {order_id}")
+                                return None
 
                     except Exception as db_e:
                         logger.error(f"【{self.cookie_id}】保存订单信息到数据库失败: {self._safe_str(db_e)}")
+                        return None
 
                     return result
                 else:
@@ -10111,7 +10162,7 @@ class XianyuLive:
                         )
 
                         # 检查是否已经在获取该订单详情
-                        order_detail_lock = self._order_detail_locks[order_id]
+                        order_detail_lock = self._order_detail_locks[(self.cookie_id, order_id)]
                         if order_detail_lock.locked():
                             logger.info(f'[{msg_time}] 【{self.cookie_id}】🔒 订单 {order_id} 详情正在被其他任务获取，跳过重复请求')
                         else:
@@ -10425,7 +10476,7 @@ class XianyuLive:
                         # 更新订单的is_bargain字段为True（标记为小刀订单）
                         try:
                             from app.db_manager import db_manager
-                            db_manager.insert_or_update_order(
+                            saved = db_manager.insert_or_update_order(
                                 order_id=order_id,
                                 item_id=item_id,
                                 buyer_id=send_user_id,
@@ -10433,9 +10484,13 @@ class XianyuLive:
                                 is_bargain=True,
                                 chat_id=chat_id
                             )
+                            if not saved:
+                                logger.warning(f'【{self.cookie_id}】订单归属或写入校验未通过，停止免拼发货: {order_id}')
+                                return
                             logger.info(f'[{msg_time}] 【{self.cookie_id}】✅ 订单 {order_id} 已标记为小刀订单')
                         except Exception as e:
                             logger.error(f'[{msg_time}] 【{self.cookie_id}】标记小刀订单失败: {self._safe_str(e)}')
+                            return
 
                         # 延迟2秒后执行免拼发货
                         logger.info(f'[{msg_time}] 【{self.cookie_id}】延迟2秒后执行免拼发货...')

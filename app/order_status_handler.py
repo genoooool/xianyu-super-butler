@@ -275,6 +275,10 @@ class OrderStatusHandler:
                         logger.error(f"❌ 订单 {order_id} 不存在于数据库中且未启用待处理队列，跳过状态更新")
                     return False
                 
+                if str(current_order.get('cookie_id')) != str(cookie_id):
+                    logger.warning(f"拒绝其他账号的订单状态事件: {order_id}")
+                    return False
+
                 current_status = current_order.get('order_status', 'processing')
                 logger.info(f"📊 当前订单状态: {current_status}, 目标状态: {new_status}")
                 
@@ -325,6 +329,8 @@ class OrderStatusHandler:
                             current_order = db_manager.get_order_by_id(order_id)
                             if not current_order:
                                 logger.error(f"❌ 重新获取订单信息失败: {order_id}")
+                                return False
+                            if str(current_order.get('cookie_id')) != str(cookie_id):
                                 return False
                             current_version = current_order.get('version', 1)
                             current_status = current_order.get('order_status', 'processing')

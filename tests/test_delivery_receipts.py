@@ -366,6 +366,10 @@ class ReceiptFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_foreign_order_has_no_delivery_or_confirmation(self):
         self.order['cookie_id'] = 'foreign'
+        await self.automatic()
+        self.live._auto_delivery.assert_not_awaited()
+        self.live.auto_confirm.assert_not_awaited()
+        self.live.ws.send.assert_not_awaited()
         result = await self.manual()
         self.assertFalse(result['results'][0]['success'])
         self.live._auto_delivery.assert_not_awaited()

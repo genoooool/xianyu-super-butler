@@ -6243,8 +6243,33 @@ class DBManager:
                         return False
 
                 # 检查订单是否已存在
-                cursor.execute("SELECT order_id FROM orders WHERE order_id = ?", (order_id,))
+                cursor.execute("SELECT order_id, cookie_id, item_id, buyer_id FROM orders WHERE order_id = ?", (order_id,))
                 existing = cursor.fetchone()
+
+                # 同一平台订单只保存卖家视角。买家账号的推送/刷新不能抢占已有归属。
+                if existing and cookie_id is not None and str(cookie_id) != str(existing[1]):
+                    logger.warning(f"拒绝跨账号更新订单: {order_id}")
+                    return False
+                owner_id = cookie_id if cookie_id is not None else (existing[1] if existing else None)
+                effective_item = item_id or (existing[2] if existing else None)
+                effective_buyer = buyer_id or (existing[3] if existing else None)
+                if owner_id and effective_item:
+                    cursor.execute("SELECT cookie_id FROM item_info WHERE item_id = ?", (effective_item,))
+                    item_owners = {str(row[0]) for row in cursor.fetchall()}
+                    if item_owners and str(owner_id) not in item_owners:
+                        logger.warning(f"拒绝将其他店铺商品的订单写入当前账号: {order_id}")
+                        return False
+                if owner_id and effective_buyer:
+                    cursor.execute("SELECT value FROM cookies WHERE id = ?", (owner_id,))
+                    account = cursor.fetchone()
+                    # Cookie ID 可以是本地别名，不能用它冒充平台买家/卖家 ID。
+                    account_cookies = dict(
+                        part.strip().split('=', 1) for part in (account[0] if account else '').split(';')
+                        if '=' in part
+                    )
+                    if account_cookies.get('unb') == str(effective_buyer):
+                        logger.warning(f"拒绝把当前账号买入的订单保存为卖出订单: {order_id}")
+                        return False
 
                 if existing:
                     # 更新现有订单

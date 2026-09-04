@@ -36,6 +36,7 @@ class OrderEventSnapshotTests(unittest.TestCase):
             "2217097925130",
             {
                 "3315714027267035666": {
+                    "order_id": "3315714027267035666",
                     "amount": "99.80",
                     "buy_num": 2,
                     "auction_price": "49.90",
@@ -115,12 +116,13 @@ class OrderEventSnapshotTests(unittest.TestCase):
         self.assertIsNone(kwargs["quantity"])
         self.assertIsNone(kwargs["buy_num"])
         self.assertEqual(kwargs["order_status"], "processing")
-        # 不应再查询商品表来凑金额
-        fake_db.get_item_info.assert_not_called()
+        # 商品表只用于验证归属，挂牌价绝不写入订单金额。
+        fake_db.get_item_info.assert_called_once_with("2217097925130", "1070863591807")
 
     def test_existing_order_details_are_not_overwritten_by_snapshot_defaults(self):
         fake_db = Mock()
         fake_db.get_order_by_id.return_value = {
+            "cookie_id": "seller",
             "item_id": "item-1",
             "buyer_id": "buyer-1",
             "quantity": "3",
