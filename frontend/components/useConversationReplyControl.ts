@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ConversationReplyControl } from '../types';
-import { getConversationReplyControl, setConversationReplyControl } from '../services/api';
+import type { AccountReplyControl, ConversationReplyControl } from '../types';
+import { ACCOUNT_REPLY_CHANGED, getConversationReplyControl, setConversationReplyControl } from '../services/api';
 
 const keyFor = (account: string, cid: string) => JSON.stringify([account, cid]);
 
@@ -16,7 +16,8 @@ export function useConversationReplyControl(account: string, cid: string, active
 
   const accept = (target: string, value: ConversationReplyControl) => {
     if (keyFor(value.cookie_id, value.chat_id) !== target) return;
-    if (known.current[target] && known.current[target].revision > value.revision) return;
+    const previous = known.current[target];
+    if (previous && (previous.revision > value.revision || previous.account_revision > value.account_revision)) return;
     known.current[target] = value;
     // A delayed result from another store/chat may update its cache, never this view.
     if (selected.current === target) {
@@ -40,18 +41,29 @@ export function useConversationReplyControl(account: string, cid: string, active
       } finally { reading = false; }
     };
     void refresh();
+    const changed = (event: Event) => {
+      const accountState = (event as CustomEvent<AccountReplyControl>).detail;
+      const local = known.current[key];
+      if (accountState.cookie_id !== account) return;
+      if (local && accountState.revision >= local.account_revision) accept(key, {
+        ...local, account_enabled: accountState.enabled, account_revision: accountState.revision,
+        enabled: accountState.enabled && local.conversation_enabled,
+      });
+      void refresh();
+    };
+    window.addEventListener(ACCOUNT_REPLY_CHANGED, changed);
     const timer = window.setInterval(() => void refresh(), 2000); // Local SQLite, never platform traffic.
-    return () => { cancelled = true; window.clearInterval(timer); };
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener(ACCOUNT_REPLY_CHANGED, changed); };
   }, [key, active, refreshTick]);
 
   const toggle = async (metadata: { buyer_id: string; buyer_name: string; item_id: string }) => {
     const current = state?.key === key ? state.value : null;
-    if (!current || failedKey === key || updating.current.has(key)) return null;
+    if (!current || !current.account_enabled || failedKey === key || updating.current.has(key)) return null;
     updating.current.add(key);
     setBusyKey(key);
     try {
       const result = await setConversationReplyControl(account, cid, {
-        ...metadata, enabled: !current.enabled, revision: current.revision,
+        ...metadata, enabled: !current.conversation_enabled, revision: current.revision,
       });
       accept(key, result);
       return result;

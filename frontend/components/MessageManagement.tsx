@@ -1032,6 +1032,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
                   )}
                 </div>
                 <ConversationAiSwitch enabled={replyControl.state?.enabled ?? null}
+                  accountEnabled={replyControl.state?.account_enabled}
                   busy={replyControl.busy || sending}
                   unavailable={replyControl.unavailable || Boolean(activeHandoff && activeHandoff.revision > (replyControl.state?.revision ?? 0))}
                   onToggle={() => void handleToggleReply()} />

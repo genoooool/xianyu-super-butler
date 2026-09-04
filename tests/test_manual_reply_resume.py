@@ -30,6 +30,8 @@ class Fixture(unittest.TestCase):
         self.db.conn.executescript('''CREATE TABLE users(id INTEGER PRIMARY KEY); INSERT INTO users VALUES(1),(2);
             CREATE TABLE cookies(id TEXT PRIMARY KEY,user_id INTEGER);
             INSERT INTO cookies VALUES('a',1),('b',1),('other',2);''')
+        from account_control_fixture import initialize_account_control
+        initialize_account_control(self.db)
         initialize_schema(self.db.conn.cursor()); assets_schema(self.db.conn.cursor()); self.db.conn.commit()
         self.service = HumanHandoffs(self.db)
         self.clear = Mock()

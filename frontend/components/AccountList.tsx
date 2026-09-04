@@ -18,10 +18,13 @@ import {
   getRiskControlStatus,
   startManualCaptchaSession,
   requestFreshCaptchaUrl,
+  ACCOUNT_REPLY_CHANGED,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
 import {Power, Edit2, Trash2, QrCode, X, Check, Loader2, MessageSquare, RefreshCw, Save, User, Key, Eye, EyeOff, Bot, Settings, MapPin, Users, ShieldCheck} from 'lucide-react';
 import { EmptyState, PageHeader, PageLoading } from './ui';
+import { useAccountReplyControl } from './useAccountReplyControl';
+import { AccountReplySwitch } from './AccountReplySwitch';
 
 type ModalType = 'edit' | 'ai-settings' | null;
 
@@ -47,6 +50,7 @@ const AccountList: React.FC = () => {
   const qrSessionRef = useRef<string>('');
   const [activeModal, setActiveModal] = useState<ModalType>(null);
   const [editingAccount, setEditingAccount] = useState<AccountDetail | null>(null);
+  const replyControl = useAccountReplyControl(activeModal === 'ai-settings' ? editingAccount?.id || '' : '');
   const [refreshingProfileId, setRefreshingProfileId] = useState<string | null>(null);
   // 正在取新验证链接的账号
   const [freshUrlLoadingId, setFreshUrlLoadingId] = useState<string | null>(null);
@@ -134,6 +138,8 @@ const AccountList: React.FC = () => {
 
   useEffect(() => {
     loadAccounts();
+    const changed = () => void loadAccounts({ silent: true });
+    window.addEventListener(ACCOUNT_REPLY_CHANGED, changed);
     // 账号的 runtime_state 会随后端连接情况变化（连上、断线重连、进出风控），
     // 只在挂载时拉一次会让页面一直停在旧快照上 —— 表现为账号已在正常收发心跳，
     // 界面却仍显示「未运行」且状态点是灰的。与风控轮询保持同一节奏。
@@ -142,6 +148,7 @@ const AccountList: React.FC = () => {
     }, 30000);
     return () => {
       clearInterval(timer);
+      window.removeEventListener(ACCOUNT_REPLY_CHANGED, changed);
       qrSessionRef.current = '';
       if (qrPollTimerRef.current) clearTimeout(qrPollTimerRef.current);
     };
@@ -1047,23 +1054,11 @@ const AccountList: React.FC = () => {
                 <div>
                   <div className="font-bold text-gray-900 flex items-center gap-2">
                     <Bot className="h-4 w-4 text-amber-600" />
-                    启用 AI 自动回复
+                    店铺自动回复总开关
                   </div>
-                  <div className="text-xs text-gray-500">AI将自动处理买家的砍价消息</div>
+                  <div className="text-xs text-gray-500">点击即保存，与「AI 回复」同步。关闭本店 QA、关键词及 AI 等客服回复；不影响手动聊天和发货。重新开启会保留人工接管的会话。</div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setAiSettings({ ...aiSettings, ai_enabled: !aiSettings.ai_enabled })}
-                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-                    aiSettings.ai_enabled ? 'bg-[#ffe100]' : 'bg-gray-300'
-                  }`}
-                >
-                  <span
-                    className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
-                      aiSettings.ai_enabled ? 'translate-x-5' : ''
-                    }`}
-                  />
-                </button>
+                <AccountReplySwitch control={replyControl} />
               </div>
 
               {/* 砍价策略 */}

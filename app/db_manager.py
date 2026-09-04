@@ -2450,6 +2450,13 @@ class DBManager:
         with self.lock:
             try:
                 cursor = self.conn.cursor()
+                from app.services.account_reply_control import AccountReplyControl
+                owner = cursor.execute('SELECT user_id FROM cookies WHERE id=?', (cookie_id,)).fetchone()
+                if not owner:
+                    return False
+                policy = AccountReplyControl(self)
+                previous = policy.state(owner[0], cookie_id)
+                enabled = previous['enabled'] if settings.get('ai_enabled') is None else bool(settings['ai_enabled'])
                 cursor.execute('''
                 INSERT OR REPLACE INTO ai_reply_settings
                 (cookie_id, ai_enabled, model_name, api_key, base_url, user_agent,
@@ -2459,7 +2466,7 @@ class DBManager:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     cookie_id,
-                    settings.get('ai_enabled', False),
+                    enabled,
                     settings.get('model_name', 'qwen-plus'),
                     settings.get('api_key', ''),
                     settings.get('base_url', 'https://ai.corleom.com/v1'),
@@ -2472,6 +2479,8 @@ class DBManager:
                     max(5, min(1440, int(settings.get('context_expire_minutes', 120)))),
                     settings.get('custom_prompts', '')
                 ))
+                if previous['enabled'] != enabled:
+                    policy.record_change(owner[0], previous)
                 self.conn.commit()
                 logger.debug(f"AI回复设置保存成功: {cookie_id}")
                 return True

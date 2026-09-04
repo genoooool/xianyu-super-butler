@@ -9792,6 +9792,14 @@ class XianyuLive:
             state = handoffs.state(owner, self.cookie_id, chat_id)
             revision = state['revision'] if state else 0
             message_ms = message_timestamp(message_data)
+            from app.services.account_reply_control import AccountReplyControl
+            account_control = AccountReplyControl(db_manager)
+            account_state = account_control.state(owner, self.cookie_id)
+            account_revision = account_state['revision']
+            if not account_control.allows(owner, self.cookie_id, account_revision, message_ms):
+                self._add_reply_decision_log(message_data, **log_context, process_status='skipped',
+                    decision_reason='account_reply_disabled_or_changed', reply_strategy='none', send_status='unknown')
+                return
             if not handoffs.can_reply(owner, self.cookie_id, chat_id, revision, message_ms):
                 self._add_reply_decision_log(message_data, **log_context, process_status='skipped',
                     decision_reason='human_handoff_paused', reply_strategy='none', send_status='unknown')
@@ -9799,6 +9807,7 @@ class XianyuLive:
 
             def base_send_allowed():
                 return (AUTO_REPLY.get('enabled', True)
+                        and account_control.allows(owner, self.cookie_id, account_revision, message_ms)
                         and not db_manager.matches_message_filter(self.cookie_id, send_message, 'skip_reply'))
 
             def current_reply_allowed():
@@ -10450,7 +10459,8 @@ class XianyuLive:
 
             # 判断消息方向
             if send_user_id == self.myid:
-                if self._is_system_or_order_event(send_message):
+                from app.services.platform_events import is_platform_seller_card
+                if is_platform_seller_card(message) or self._is_system_or_order_event(send_message):
                     # A platform "你已发货" card is not a human taking over this chat.
                     return
                 logger.info(f"[{msg_time}] 【手动发出】 商品({item_id}): {send_message}")

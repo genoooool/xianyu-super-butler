@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   CheckCircle2,
@@ -21,6 +21,8 @@ import {
 import { notify } from '../services/feedback';
 import { EmptyState, PageHeader, PageLoading, SectionHeader } from './ui';
 import AIKnowledge from './AIKnowledge';
+import { useAccountReplyControl } from './useAccountReplyControl';
+import { AccountReplySwitch } from './AccountReplySwitch';
 
 // 自建中转，兼容 OpenAI 接口，每天可领免费额度，省去用户自己找服务商配密钥。
 const FREE_TOKEN_BASE_URL = 'https://ai.corleom.com/v1';
@@ -45,6 +47,9 @@ const defaultSettings: AIReplySettings = {
 const AIReply: React.FC = () => {
   const [accounts, setAccounts] = useState<AccountDetail[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState('');
+  const selectedId = useRef(selectedAccountId);
+  selectedId.current = selectedAccountId;
+  const replyControl = useAccountReplyControl(selectedAccountId);
   const [settings, setSettings] = useState<AIReplySettings>(defaultSettings);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -71,13 +76,15 @@ const AIReply: React.FC = () => {
 
   useEffect(() => {
     if (!selectedAccountId) return;
+    let cancelled = false;
     setLoading(true);
     setTestReply('');
     setShowApiKey(false);
     getAccountAISettings(selectedAccountId)
-      .then(data => setSettings({ ...defaultSettings, ...data, api_key: '' }))
-      .catch(error => notify(error instanceof Error ? error.message : 'AI配置加载失败', 'error'))
-      .finally(() => setLoading(false));
+      .then(data => { if (!cancelled) setSettings({ ...defaultSettings, ...data, api_key: '' }); })
+      .catch(error => { if (!cancelled) notify(error instanceof Error ? error.message : 'AI配置加载失败', 'error'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [selectedAccountId]);
 
   const updateSetting = <K extends keyof AIReplySettings>(key: K, value: AIReplySettings[K]) => {
@@ -98,6 +105,7 @@ const AIReply: React.FC = () => {
     try {
       await updateAccountAISettings(selectedAccountId, settings);
       const refreshed = await getAccountAISettings(selectedAccountId);
+      if (selectedId.current !== selectedAccountId) return;
       setSettings({ ...defaultSettings, ...refreshed, api_key: '' });
       notify('人工智能回复配置已保存', 'success');
     } catch (error) {
@@ -146,6 +154,7 @@ const AIReply: React.FC = () => {
               <span className="field-label">当前账号</span>
               <select
                 value={selectedAccountId}
+                disabled={saving || testing}
                 onChange={event => setSelectedAccountId(event.target.value)}
                 className="ios-input w-full rounded-md px-3 py-2 text-sm font-semibold"
               >
@@ -159,7 +168,7 @@ const AIReply: React.FC = () => {
             <button
               type="button"
               onClick={handleSave}
-              disabled={saving || !selectedAccountId}
+              disabled={loading || saving || !selectedAccountId}
               className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm"
             >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
@@ -186,18 +195,9 @@ const AIReply: React.FC = () => {
               <p className="mt-1 text-sm text-gray-500">
                 固定 QA 在「自动回复」中设置：先匹配常见问法，再识别意图，命中后原样发送。无匹配才使用知识资料；含糊或出错时不擅自报价。
               </p>
+              <p className="mt-1 text-xs text-gray-500">店铺总开关统一控制 QA、关键词和 AI 等客服自动回复，点击即保存。关闭不影响手动发消息、通知或订单发货；开启时保留单独关闭及待人工回复的会话。</p>
             </div>
-            <label className="flex cursor-pointer items-center gap-3">
-              <span className="text-sm font-bold text-gray-700">
-                {settings.ai_enabled ? '已启用' : '已停用'}
-              </span>
-              <input
-                type="checkbox"
-                checked={settings.ai_enabled}
-                onChange={event => updateSetting('ai_enabled', event.target.checked)}
-                className="h-5 w-5 accent-yellow-400"
-              />
-            </label>
+            <AccountReplySwitch control={replyControl} />
           </section>
 
           <button type="button" className="ios-btn-secondary flex items-center gap-2 self-start px-4 py-2 text-sm"
@@ -415,7 +415,7 @@ const AIReply: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleTest}
-                    disabled={testing || !settings.ai_enabled}
+                    disabled={loading || testing || !replyControl.state?.enabled || replyControl.unavailable}
                     className="ios-btn-primary mt-3 flex w-full items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
                   >
                     {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}

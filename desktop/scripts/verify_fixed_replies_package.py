@@ -104,10 +104,20 @@ def main():
             assert len(session.get(base+'/chat/handoffs').json()['entries'])==1
             endpoint='/chat/handoffs/offline-handoff/offline-chat/resume'
             assert session.post(base+endpoint,json={'revision':2}).status_code==409
+            # Store OFF must also block the legacy resume endpoint.
+            assert session.post(base+endpoint,json={'revision':1}).status_code==409
+            master=base+'/chat/reply-control/offline-handoff'
+            control=session.get(master); control.raise_for_status()
+            assert control.json()['enabled'] is False and control.json()['revision']==0
+            ordinary=session.get(base+'/chat/handoffs/offline-handoff/ordinary').json()
+            assert ordinary['enabled'] is False and ordinary['conversation_enabled'] is True
+            on=session.put(master,json={'enabled':True,'revision':0}); on.raise_for_status()
+            assert on.json()['revision']==1
+            assert session.get(base+'/chat/handoffs/offline-handoff/ordinary').json()['enabled'] is True
             post(endpoint,json={'revision':1})
             assert session.post(base+endpoint,json={'revision':1}).status_code==409
             assert session.get(base+'/chat/handoffs').json()['entries']==[]
-            assert db.execute("SELECT ai_enabled FROM ai_reply_settings WHERE cookie_id='offline-handoff'").fetchone()[0]==0
+            assert db.execute("SELECT ai_enabled FROM ai_reply_settings WHERE cookie_id='offline-handoff'").fetchone()[0]==1
             assert db.execute("SELECT pending,revision FROM chat_human_handoffs").fetchone()==(0,2)
             control=base+'/chat/handoffs/offline-handoff/offline-chat'
             assert session.get(control).json()['enabled'] is True
@@ -120,12 +130,22 @@ def main():
             assert session.put(control,json=dict(enabled='false',revision=3)).status_code==422
             on=session.put(control,json=dict(enabled=True,revision=3)); on.raise_for_status()
             assert on.json()['enabled'] is True and on.json()['revision']==4
+            local_rows=db.execute('SELECT * FROM chat_human_handoffs').fetchall()
+            off=session.put(master,json={'enabled':False,'revision':1}); off.raise_for_status()
+            assert off.json()['revision']==2
+            assert db.execute('SELECT * FROM chat_human_handoffs').fetchall()==local_rows
+            assert session.get(base+'/chat/handoffs/offline-handoff/offline-chat').json()['enabled'] is False
+            config=session.get(base+'/ai-reply-settings/offline-handoff').json()
+            config.pop('ai_enabled')
+            config={key:value for key,value in config.items() if value is not None}
+            saved=session.put(base+'/ai-reply-settings/offline-handoff',json=config); saved.raise_for_status()
+            assert session.get(master).json()==off.json()
             assert db.execute("SELECT ai_enabled FROM ai_reply_settings WHERE cookie_id='offline-handoff'").fetchone()[0]==0
             assert db.execute('PRAGMA quick_check').fetchone()[0]=='ok'
             db.close()
             report=dict(status='passed',ready_seconds=ready,packaged_qa_image=True,phrase_image=True,backup_roundtrip=True,
                         private_asset_guard=True,handoff_resume=True,multiselect_crud=True,offline_send_keeps_handoff=True,
-                        ai_enablement_unchanged=True,conversation_switch_scope_cas=True,buyer_messages_sent=0)
+                        master_control_and_model_save=True,conversation_switch_scope_cas=True,buyer_messages_sent=0)
             (args.output_dir/'result.json').write_text(json.dumps(report,indent=2)+'\n')
             print(json.dumps(report),flush=True)
         finally:

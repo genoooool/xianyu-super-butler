@@ -35,6 +35,7 @@ from app.desktop_notifications import desktop_notifications
 from app.routers.desktop_notifications import create_desktop_notifications_router
 from app.desktop_updates import desktop_updates, update_gate, UpdateBusy
 from app.routers.desktop_updates import create_desktop_updates_router
+from app.routers.account_reply_control import create_account_reply_control_router
 from app.routers.ai_knowledge import create_ai_knowledge_router
 from app.routers.desktop_credentials import create_desktop_credentials_router
 from app.routers.delivery_block import create_delivery_block_router
@@ -356,6 +357,7 @@ else:
 app.include_router(create_delivery_block_router(get_current_user, db_manager))
 app.include_router(create_desktop_notifications_router(desktop_notifications, DESKTOP_ACCESS_TOKEN, verify_token, db_manager))
 app.include_router(create_desktop_updates_router(desktop_updates, update_gate, DESKTOP_ACCESS_TOKEN, verify_token))
+app.include_router(create_account_reply_control_router(get_current_user, db_manager))
 app.include_router(create_ai_knowledge_router(get_current_user, db_manager))
 
 def _clear_handoff_timed_pause(chat_id, cookie_id, confirmed_message_ids=()):
@@ -6006,7 +6008,7 @@ class BatchDeleteRequest(BaseModel):
 
 
 class AIReplySettings(BaseModel):
-    ai_enabled: bool
+    ai_enabled: Optional[bool] = None
     model_name: str = "qwen-plus"
     api_key: str = ""
     base_url: str = "https://ai.corleom.com/v1"
@@ -6112,11 +6114,7 @@ def update_ai_reply_settings(cookie_id: str, settings: AIReplySettings, current_
 
         if success:
 
-            # 如果启用了AI回复，记录日志
-            if settings.ai_enabled:
-                logger.info(f"账号 {cookie_id} 启用AI回复")
-            else:
-                logger.info(f"账号 {cookie_id} 禁用AI回复")
+            logger.info(f"账号 {cookie_id} AI配置已保存；未提交总开关时保留原状态")
 
             return {"message": "AI回复设置更新成功"}
         else:

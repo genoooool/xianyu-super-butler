@@ -2,21 +2,24 @@ import React from 'react';
 
 interface Props {
   enabled: boolean | null;
+  accountEnabled?: boolean;
   busy: boolean;
   unavailable: boolean;
   onToggle: () => void;
 }
 
-export const ConversationAiSwitch: React.FC<Props> = ({ enabled, busy, unavailable, onToggle }) => {
+export const ConversationAiSwitch: React.FC<Props> = ({ enabled, accountEnabled, busy, unavailable, onToggle }) => {
   const unknown = enabled === null || unavailable;
   const label = unknown ? 'AI 自动回复状态暂不可用，正在重新读取'
+    : accountEnabled === false ? '店铺自动回复已关闭，请先打开店铺总开关'
     : enabled ? 'AI 自动回复已开启；点击关闭当前会话' : 'AI 自动回复已关闭；点击开启当前会话';
   return (
     <button type="button" role="switch" aria-label="当前会话 AI 自动回复"
       aria-checked={enabled === true} aria-busy={busy || enabled === null}
-      disabled={busy || unknown} onClick={onToggle}
+      disabled={busy || unknown || accountEnabled === false} onClick={onToggle}
       title={`${label}。只影响当前会话，仍遵循店铺回复设置。`}
       className="ml-auto inline-flex min-h-9 shrink-0 items-center gap-[9px] rounded-md py-1 pl-2 text-[var(--text-muted)] outline-offset-4 hover:text-[var(--text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--brand)] disabled:cursor-wait disabled:opacity-60 [@media(pointer:coarse)]:min-h-11">
+      {accountEnabled === false && <span className="text-xs">店铺已关闭</span>}
       <span aria-hidden="true" className="text-[13px] font-medium tracking-[0.015em]">AI</span>
       <span aria-hidden="true"
         className={`relative block h-6 w-11 rounded-full transition-colors duration-150 motion-reduce:transition-none ${

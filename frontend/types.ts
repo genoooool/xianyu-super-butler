@@ -451,10 +451,20 @@ export interface HumanHandoff {
   send_status: 'unknown' | 'confirmed' | 'withheld';
 }
 
+export interface AccountReplyControl {
+  cookie_id: string;
+  enabled: boolean;
+  revision: number;
+  changed_ms: number;
+}
+
 export interface ConversationReplyControl {
   cookie_id: string;
   chat_id: string;
   enabled: boolean;
+  conversation_enabled: boolean;
+  account_enabled: boolean;
+  account_revision: number;
   revision: number;
   reason: string;
 }

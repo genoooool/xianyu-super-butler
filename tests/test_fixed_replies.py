@@ -240,6 +240,11 @@ class DeliveryTests(Fixture):
 
 
 class ActualCallerTests(Fixture):
+    def setUp(self):
+        super().setUp()
+        from account_control_fixture import initialize_account_control
+        initialize_account_control(self.db)
+
     def run_caller(self, message='多少钱', model=None, paused=None, failure=False, no_qa=False):
         source=Path(__file__).resolve().parents[1]/'XianyuAutoAsync.py'
         tree=ast.parse(source.read_text())
@@ -261,7 +266,7 @@ class ActualCallerTests(Fixture):
             if failure: raise RuntimeError('offline failure')
             if args[-1](): sent.append(args[5:7])
         with patch.dict(sys.modules,{'app.db_manager':SimpleNamespace(db_manager=self.db),'app.ai_reply_engine':SimpleNamespace(ai_reply_engine=SimpleNamespace(_generate_with_retry=model or Mock(return_value='bad output')))}),patch('app.services.reply_delivery.send_parts',side_effect=deliver):
-            asyncio.run(env['_process_chat_message_reply'](instance,{},None,'buyer','buyer',message,'one','chat','now'))
+            asyncio.run(env['_process_chat_message_reply'](instance,{'1':{'5':int(time.time()*1000)}},None,'buyer','buyer',message,'one','chat','now'))
         return instance,sent
 
     def test_actual_caller_sends_stored_answer_and_does_not_fall_through(self):

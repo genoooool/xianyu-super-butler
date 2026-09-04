@@ -7,7 +7,7 @@ import {
   DeliveryBlockRule, PersonalBlacklistEntry, MessageNotification,
   NotificationChannel, NotificationChannelType, RiskControlLog, SystemLog,
   MessageFilter, MessageFilterType, AutoReplyLog
-  , ChatAccount, ChatConversation, ChatMessage, HumanHandoff, ConversationReplyControl, ProductMaterial,
+  , ChatAccount, ChatConversation, ChatMessage, HumanHandoff, ConversationReplyControl, AccountReplyControl, ProductMaterial,
   ProductFilterRule, ProductDeleteRule, AutomationTaskRun,
   ProductAutomationResult, ProductDeletePreview, QuickPhrase,
   AnnouncementPayload
@@ -815,12 +815,22 @@ export const getAccountAISettings = async (cookieId: string): Promise<AIReplySet
     return get(`/ai-reply-settings/${cookieId}`);
 }
 
+export const ACCOUNT_REPLY_CHANGED = 'account-reply-control-changed';
+export const getAccountReplyControl = (cookieId: string): Promise<AccountReplyControl> =>
+  get(`/chat/reply-control/${encodeURIComponent(cookieId)}`);
+export const setAccountReplyControl = async (cookieId: string, enabled: boolean, revision: number): Promise<AccountReplyControl> => {
+  const state = await put<AccountReplyControl>(`/chat/reply-control/${encodeURIComponent(cookieId)}`, { enabled, revision });
+  window.dispatchEvent(new CustomEvent(ACCOUNT_REPLY_CHANGED, { detail: state }));
+  return state;
+};
+
 export const updateAccountAISettings = async (cookieId: string, settings: Partial<AIReplySettings>): Promise<ApiResponse> => {
   const payload = {
-    ai_enabled: settings.ai_enabled ?? false,
+    // Model drafts must never overwrite the independently persisted store switch.
     model_name: settings.model_name ?? 'qwen-plus',
     api_key: settings.api_key ?? '',
     base_url: settings.base_url ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    user_agent: settings.user_agent ?? '',
     max_discount_percent: settings.max_discount_percent ?? 10,
     max_discount_amount: settings.max_discount_amount ?? 100,
     max_bargain_rounds: settings.max_bargain_rounds ?? 3,

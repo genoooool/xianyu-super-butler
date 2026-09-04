@@ -19,6 +19,8 @@ from app.services.human_handoff import (
     HANDOFF_REPLY, HandoffReply, HumanHandoffs, initialize_schema, message_timestamp, request_handoff,
 )
 from app.routers.human_handoff import create_human_handoff_router
+from account_control_fixture import initialize_account_control
+from app.services.account_reply_control import AccountReplyControl
 
 
 class Fixture(unittest.TestCase):
@@ -28,6 +30,7 @@ class Fixture(unittest.TestCase):
             INSERT INTO users VALUES(1),(2);
             CREATE TABLE cookies(id TEXT PRIMARY KEY,user_id INTEGER);
             INSERT INTO cookies VALUES('a',1),('b',1),('other',2);''')
+        initialize_account_control(self.db)
         initialize_schema(self.db.conn.cursor()); self.db.conn.commit()
         self.now = 1000
         self.service = HumanHandoffs(self.db, clock=lambda: self.now)
@@ -214,6 +217,11 @@ class ActualReplyCallerTests(Fixture):
         return self.knowledge.save(1, dict(scope='account', cookie_id='a', topic='询价', keywords='多少钱',
             content='10元10个，按照此回答。', entry_type='qa'))
 
+    def set_ai(self, enabled):
+        self.db.get_ai_reply_settings.return_value = {'ai_enabled': enabled}
+        control = AccountReplyControl(self.db)
+        control.set_enabled(1, 'a', enabled, control.state(1, 'a')['revision'])
+
     def run_caller(self, message='怎么理解', item_id='item', chat_id='chat', stamp=None):
         modules = {'app.db_manager': SimpleNamespace(db_manager=self.db),
                    'app.ai_reply_engine': SimpleNamespace(ai_reply_engine=SimpleNamespace(_generate_with_retry=self.model))}
@@ -231,7 +239,7 @@ class ActualReplyCallerTests(Fixture):
     def test_unknown_product_is_not_a_handoff_even_when_ai_enabled(self):
         self.qa()
         for enabled in (True, False):
-            self.db.get_ai_reply_settings.return_value = {'ai_enabled': enabled}
+            self.set_ai(enabled)
             self.run_caller('你好', item_id='missing', chat_id=str(enabled))
         self.instance.send_im_text.assert_not_called()
         self.instance.get_default_reply.assert_not_called()
@@ -244,11 +252,11 @@ class ActualReplyCallerTests(Fixture):
         self.db.conn.execute("INSERT INTO item_info VALUES('b','b-only')")
         self.knowledge.save(1, dict(scope='item', cookie_id='b', item_id='b-only',
             topic='问候', keywords='你好', content='B店原文', entry_type='qa'))
-        self.db.get_ai_reply_settings.return_value = {'ai_enabled': False}
+        self.set_ai(False)
         self.run_caller('你好', item_id='b-only')
         self.instance.send_im_text.assert_not_called(); self.model.assert_not_called()
         self.assertEqual(self.service.pending(1), [])
-        self.assertEqual(self.instance._add_reply_decision_log.call_args.kwargs['decision_reason'], 'qa_target_unavailable')
+        self.assertEqual(self.instance._add_reply_decision_log.call_args.kwargs['decision_reason'], 'account_reply_disabled_or_changed')
 
     def test_rule_load_failure_never_sends_handoff_or_default(self):
         with patch('app.services.fixed_replies.FixedReplies.choose', side_effect=RuntimeError('offline failure')):
@@ -261,23 +269,23 @@ class ActualReplyCallerTests(Fixture):
         self.qa()
         self.knowledge.save(1, dict(scope='account', cookie_id='a', topic='第二报价', keywords='多少钱',
             content='第二原文', entry_type='qa'))
-        self.db.get_ai_reply_settings.return_value = {'ai_enabled': False}
+        self.set_ai(False)
         self.run_caller('多少钱')
         self.instance.send_im_text.assert_not_called(); self.model.assert_not_called()
         self.assertEqual(self.service.pending(1), [])
 
-    def test_ai_off_literal_greeting_still_sends_saved_keyword_answer(self):
+    def test_account_off_literal_greeting_does_not_send_saved_keyword_answer(self):
         self.knowledge.save(1, dict(scope='item', cookie_id='a', item_id='item', topic='问候',
             keywords='你好', content='固定问候原文', entry_type='qa'))
-        self.db.get_ai_reply_settings.return_value = {'ai_enabled': False}
+        self.set_ai(False)
         self.run_caller('你好')
-        self.instance.send_im_text.assert_awaited_once_with('chat', 'buyer', '固定问候原文')
+        self.instance.send_im_text.assert_not_called()
         self.model.assert_not_called(); self.assertEqual(self.service.pending(1), [])
 
     def test_ai_switched_off_during_classification_does_not_handoff(self):
         self.qa()
         def classify(*_):
-            self.db.get_ai_reply_settings.return_value = {'ai_enabled': False}
+            self.set_ai(False)
             return '{"status":"unclear","id":null}'
         self.model.side_effect = classify
         self.run_caller()
@@ -300,7 +308,7 @@ class ActualReplyCallerTests(Fixture):
         self.paused = True; self.run_caller()
         self.paused = False; self.env['AUTO_REPLY']['enabled'] = False; self.run_caller()
         self.env['AUTO_REPLY']['enabled'] = True
-        self.db.get_ai_reply_settings.return_value = {'ai_enabled': False}
+        self.set_ai(False)
         self.instance.get_ai_reply.return_value = None; self.run_caller()
         self.assertEqual(self.service.pending(1), [])
         self.instance.send_im_text.assert_not_called()

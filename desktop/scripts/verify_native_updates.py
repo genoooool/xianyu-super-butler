@@ -7,6 +7,7 @@ import subprocess
 import time
 import psutil
 import requests
+import plistlib
 
 
 def main():
@@ -14,6 +15,8 @@ def main():
     parser.add_argument('--output-dir',type=Path,required=True); args=parser.parse_args()
     args.output_dir.mkdir(parents=True,exist_ok=False)
     binary=(args.app/'Contents/MacOS/xianyu-workbench').resolve(strict=True)
+    with (args.app/'Contents/Info.plist').open('rb') as f:
+        expected_version=plistlib.load(f)['CFBundleShortVersionString']
     with (args.output_dir/'native.log').open('w') as log:
         process=subprocess.Popen([str(binary),'--desktop-smoke'],stdout=log,stderr=log)
         owner=psutil.Process(process.pid); children=[]
@@ -42,7 +45,7 @@ def main():
             login=session.post(base+'/login',json={'username':'admin','password':'admin123'}).json()
             assert login.get('success'); session.headers['Authorization']='Bearer '+login['token']
             status=session.get(base+'/desktop/updates/status'); status.raise_for_status()
-            assert status.json()['version']=='1.0.0' and status.json()['available']
+            assert status.json()['version']==expected_version and status.json()['available']
             assert session.get(base+'/desktop/updates/poll').status_code==403
             assert session.post(base+'/desktop/updates/action',json={'action':'install','version':'9.9.9'}).status_code==409
             session.post(base+'/desktop/updates/action',json={'action':'check','version':''}).raise_for_status()
@@ -53,7 +56,7 @@ def main():
                 time.sleep(.3)
             else: raise RuntimeError('Native bridge did not answer')
             assert status['phase'] in ('unpublished','error','current','available','incompatible'),status
-            assert status['version']=='1.0.0'
+            assert status['version']==expected_version
             # The legacy desktop announcement endpoint must remain inert.
             old=session.get(base+'/api/announcement',params={'force':True}).json()
             assert not old['source_configured'] and not old['announcements']
