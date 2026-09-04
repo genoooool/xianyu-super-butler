@@ -9577,9 +9577,13 @@ class XianyuLive:
                 return base_send_allowed() and handoffs.can_reply(owner, self.cookie_id, chat_id, revision, message_ms)
 
             async def transfer_to_human(reason, check):
+                # A local QA/target error must never bypass the account's AI switch.
+                # request_handoff repeats this check before claiming and before sending.
+                def enabled_check():
+                    return bool(db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled')) and check()
                 ticket = await request_handoff(self, db_manager, owner_id=owner, chat_id=chat_id,
                     buyer_id=send_user_id, buyer_name=send_user_name, item_id=item_id, reason=reason,
-                    revision=revision, message_ms=message_ms, check=check,
+                    revision=revision, message_ms=message_ms, check=enabled_check,
                     notify=not db_manager.matches_message_filter(self.cookie_id, send_message, 'skip_notify'))
                 if ticket:
                     self._add_reply_decision_log(message_data, **log_context, process_status='success',
@@ -9587,7 +9591,7 @@ class XianyuLive:
                         reply_text=HANDOFF_REPLY, send_status='success' if ticket['send_status'] == 'confirmed' else 'unknown')
 
             # Fixed QA owns its payload. The classifier receives questions/IDs, never answer text or images.
-            from app.services.fixed_replies import FixedReplies, FixedDecision, CLARIFY_REPLY
+            from app.services.fixed_replies import FixedReplies, ReplyTargetUnavailable, CLARIFY_REPLY
             from app.services.reply_delivery import send_parts
             from app.ai_reply_engine import ai_reply_engine
             fixed = FixedReplies(db_manager)
@@ -9597,9 +9601,19 @@ class XianyuLive:
                 classifier = lambda messages: ai_reply_engine._generate_with_retry(ai_settings, messages, self.cookie_id)
             try:
                 decision = await asyncio.to_thread(fixed.choose, self.cookie_id, item_id, send_message, classifier)
+            except ReplyTargetUnavailable:
+                self._add_reply_decision_log(message_data, **log_context, process_status='skipped',
+                    decision_reason='qa_target_unavailable', reply_strategy='none', send_status='unknown')
+                return  # Not our confirmed product: no model, handoff, keyword or default fallback.
             except Exception:
-                decision = FixedDecision('clarify', reason='rule_load_failed')
+                self._add_reply_decision_log(message_data, **log_context, process_status='failed',
+                    decision_reason='qa_rules_unavailable', reply_strategy='none', send_status='unknown')
+                return  # Infrastructure errors are not evidence that a buyer needs human help.
             if decision.status == 'clarify':
+                if not db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled'):
+                    self._add_reply_decision_log(message_data, **log_context, process_status='skipped',
+                        decision_reason='qa_uncertain_ai_disabled', reply_strategy='none', send_status='unknown')
+                    return
                 def handoff_allowed():
                     return (base_send_allowed()
                             and (not decision.semantic or db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled'))

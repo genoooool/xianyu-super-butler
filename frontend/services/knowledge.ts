@@ -1,10 +1,11 @@
-import { get, post } from '../lib/request';
+import { get, post, put, del } from '../lib/request';
 
 export type KnowledgeScope = 'shared' | 'account' | 'item';
 export interface KnowledgeDraft {
   scope: KnowledgeScope;
   cookie_id: string;
   item_id: string;
+  item_ids?: string[];
   topic: string;
   keywords: string;
   content: string;
@@ -15,6 +16,7 @@ export interface KnowledgeDraft {
 }
 export interface KnowledgeEntry extends KnowledgeDraft {
   id: number;
+  revision: number;
   source: string;
   updated_at: string;
   chunk_index?: number;
@@ -25,6 +27,11 @@ export const previewDocument = (file: File) => post<DocumentPreview>('/ai-knowle
 export const importDocument = (entry: KnowledgeDraft) => post<{ entry: KnowledgeEntry }>('/ai-knowledge/documents/import', entry);
 export const listKnowledge = () => get<{ entries: KnowledgeEntry[] }>('/ai-knowledge');
 export const saveKnowledge = (entry: KnowledgeDraft) => post<{ entry: KnowledgeEntry }>('/ai-knowledge', entry);
+export const createFixedReply = (entry: KnowledgeDraft) => post<{ entry: KnowledgeEntry }>('/ai-knowledge/qa', entry);
+export const updateFixedReply = (id: number, revision: number, entry: KnowledgeDraft) =>
+  put<{ entry: KnowledgeEntry }>(`/ai-knowledge/qa/${id}`, { ...entry, revision });
+export const deleteFixedReply = (id: number, revision: number) =>
+  del<{ success: boolean }>(`/ai-knowledge/qa/${id}`, { params: { revision } });
 export const previewKnowledge = (cookie_id: string, item_id: string, message: string) =>
   post<{ entries: KnowledgeEntry[]; model_called: false }>('/ai-knowledge/preview', { cookie_id, item_id, message });
 

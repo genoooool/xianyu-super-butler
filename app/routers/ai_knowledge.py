@@ -4,7 +4,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from app.services.ai_knowledge import KnowledgeService
+from app.services.ai_knowledge import KnowledgeService, MAX_QA_ITEMS
 from app.services.knowledge_documents import MAX_CONTENT_CHARS, MAX_UPLOAD_BYTES, preview_document
 
 
@@ -12,6 +12,7 @@ class KnowledgeEntry(BaseModel):
     scope: Literal["shared", "account", "item"]
     cookie_id: str = Field(default="", max_length=128)
     item_id: str = Field(default="", max_length=128)
+    item_ids: list[str] | None = Field(default=None, max_length=MAX_QA_ITEMS)
     topic: str = Field(min_length=1, max_length=80)
     keywords: str = Field(default="", max_length=300)
     content: str = Field(default="", max_length=MAX_CONTENT_CHARS)
@@ -25,6 +26,14 @@ class KnowledgePreview(BaseModel):
     cookie_id: str = Field(min_length=1, max_length=128)
     item_id: str = Field(default="", max_length=128)
     message: str = Field(min_length=1, max_length=2000)
+
+
+class FixedReplyEntry(KnowledgeEntry):
+    entry_type: Literal['qa'] = 'qa'
+
+
+class FixedReplyUpdate(FixedReplyEntry):
+    revision: int = Field(ge=1, strict=True)
 
 
 def create_ai_knowledge_router(get_current_user, db):
@@ -48,6 +57,20 @@ def create_ai_knowledge_router(get_current_user, db):
     @router.post("")
     def save_entry(entry: KnowledgeEntry, user=Depends(get_current_user)):
         return {"entry": run(lambda: service.save(user["user_id"], entry.model_dump()))}
+
+    @router.post('/qa')
+    def create_qa(entry: FixedReplyEntry, user=Depends(get_current_user)):
+        return {'entry': run(lambda: service.save(user['user_id'], entry.model_dump(), create_only=True))}
+
+    @router.put('/qa/{entry_id}')
+    def update_qa(entry_id: int, entry: FixedReplyUpdate, user=Depends(get_current_user)):
+        return {'entry': run(lambda: service.save(user['user_id'], entry.model_dump(),
+            entry_id=entry_id, expected_revision=entry.revision))}
+
+    @router.delete('/qa/{entry_id}')
+    def delete_qa(entry_id: int, revision: int = Query(ge=1), user=Depends(get_current_user)):
+        run(lambda: service.delete_qa(user['user_id'], entry_id, revision))
+        return {'success': True}
 
     @router.post("/preview")
     def preview(query: KnowledgePreview, user=Depends(get_current_user)):

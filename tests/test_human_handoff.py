@@ -227,10 +227,60 @@ class ActualReplyCallerTests(Fixture):
         self.instance.get_default_reply.assert_not_called()
         self.assertEqual(self.model.call_count, 1)
 
-    def test_unknown_product_can_transfer_without_leaking_qa(self):
-        self.qa(); self.run_caller('多少钱', item_id='missing')
-        self.instance.send_im_text.assert_awaited_once_with('chat', 'buyer', HANDOFF_REPLY)
+    def test_unknown_product_is_not_a_handoff_even_when_ai_enabled(self):
+        self.qa()
+        for enabled in (True, False):
+            self.db.get_ai_reply_settings.return_value = {'ai_enabled': enabled}
+            self.run_caller('你好', item_id='missing', chat_id=str(enabled))
+        self.instance.send_im_text.assert_not_called()
+        self.instance.get_default_reply.assert_not_called()
+        self.instance.get_keyword_reply.assert_not_called()
+        self.instance.get_ai_reply.assert_not_called()
+        self.assertEqual(self.service.pending(1), [])
         self.model.assert_not_called()
+
+    def test_other_store_product_and_greeting_do_not_trigger_handoff(self):
+        self.db.conn.execute("INSERT INTO item_info VALUES('b','b-only')")
+        self.knowledge.save(1, dict(scope='item', cookie_id='b', item_id='b-only',
+            topic='问候', keywords='你好', content='B店原文', entry_type='qa'))
+        self.db.get_ai_reply_settings.return_value = {'ai_enabled': False}
+        self.run_caller('你好', item_id='b-only')
+        self.instance.send_im_text.assert_not_called(); self.model.assert_not_called()
+        self.assertEqual(self.service.pending(1), [])
+        self.assertEqual(self.instance._add_reply_decision_log.call_args.kwargs['decision_reason'], 'qa_target_unavailable')
+
+    def test_rule_load_failure_never_sends_handoff_or_default(self):
+        with patch('app.services.fixed_replies.FixedReplies.choose', side_effect=RuntimeError('offline failure')):
+            self.run_caller('你好')
+        self.assertEqual(self.service.pending(1), [])
+        self.instance.send_im_text.assert_not_called(); self.instance.get_default_reply.assert_not_called()
+        self.assertEqual(self.instance._add_reply_decision_log.call_args.kwargs['decision_reason'], 'qa_rules_unavailable')
+
+    def test_ai_off_conflicting_literal_qa_does_not_handoff(self):
+        self.qa()
+        self.knowledge.save(1, dict(scope='account', cookie_id='a', topic='第二报价', keywords='多少钱',
+            content='第二原文', entry_type='qa'))
+        self.db.get_ai_reply_settings.return_value = {'ai_enabled': False}
+        self.run_caller('多少钱')
+        self.instance.send_im_text.assert_not_called(); self.model.assert_not_called()
+        self.assertEqual(self.service.pending(1), [])
+
+    def test_ai_off_literal_greeting_still_sends_saved_keyword_answer(self):
+        self.knowledge.save(1, dict(scope='item', cookie_id='a', item_id='item', topic='问候',
+            keywords='你好', content='固定问候原文', entry_type='qa'))
+        self.db.get_ai_reply_settings.return_value = {'ai_enabled': False}
+        self.run_caller('你好')
+        self.instance.send_im_text.assert_awaited_once_with('chat', 'buyer', '固定问候原文')
+        self.model.assert_not_called(); self.assertEqual(self.service.pending(1), [])
+
+    def test_ai_switched_off_during_classification_does_not_handoff(self):
+        self.qa()
+        def classify(*_):
+            self.db.get_ai_reply_settings.return_value = {'ai_enabled': False}
+            return '{"status":"unclear","id":null}'
+        self.model.side_effect = classify
+        self.run_caller()
+        self.instance.send_im_text.assert_not_called(); self.assertEqual(self.service.pending(1), [])
 
     def test_known_qa_still_sends_original_and_no_handoff(self):
         self.qa(); self.run_caller('多少钱')

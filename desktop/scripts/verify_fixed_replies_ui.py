@@ -35,7 +35,7 @@ def main():
     db=SimpleNamespace(conn=sqlite3.connect(args.output_dir/'ui.sqlite3',check_same_thread=False),lock=threading.RLock())
     db.conn.executescript('''CREATE TABLE users(id INTEGER PRIMARY KEY); INSERT INTO users VALUES(1);
         CREATE TABLE cookies(id TEXT PRIMARY KEY,user_id INTEGER); INSERT INTO cookies VALUES('a',1),('b',1);
-        CREATE TABLE item_info(cookie_id TEXT,item_id TEXT); INSERT INTO item_info VALUES('a','one');
+        CREATE TABLE item_info(cookie_id TEXT,item_id TEXT); INSERT INTO item_info VALUES('a','one'),('a','two'),('a','three'),('b','b-only');
         CREATE TABLE chat_quick_phrases(id INTEGER PRIMARY KEY,category TEXT DEFAULT '默认',title TEXT,content TEXT,
         sort_order INTEGER DEFAULT 0,enabled INTEGER DEFAULT 1,use_count INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);''')
@@ -54,7 +54,10 @@ def main():
     add_get('/desktop/notifications/status',dict(available=False,active=False))
     add_get('/desktop/credentials',dict(available=False,saved=False))
     add_get('/cookies/details',[dict(id='a',nickname='测试店铺 A',enabled=False),dict(id='b',nickname='测试店铺 B',enabled=False)])
-    add_get('/items',dict(items=[dict(cookie_id='a',item_id='one',item_title='测试商品：星星套餐')]))
+    add_get('/items',dict(items=[dict(cookie_id='a',item_id='one',item_title='测试商品：星星套餐'),
+        dict(cookie_id='a',item_id='two',item_title='测试商品：月亮套餐'),
+        dict(cookie_id='a',item_id='three',item_title='测试商品：太阳套餐'),
+        dict(cookie_id='b',item_id='b-only',item_title='其他店铺的商品')]))
     add_get('/default-replies/{cookie_id}',dict(enabled=False))
     add_get('/keywords/{cookie_id}',[])
     add_get('/reply-rules/{cookie_id}',[])
@@ -102,7 +105,9 @@ def main():
             modal=page.get_by_role('dialog',name='添加意图回复')
             expect(modal).to_be_visible()
             modal.get_by_label('回复范围',exact=True).select_option('item')
-            modal.get_by_label('回复所属商品',exact=True).select_option('one')
+            modal.get_by_label('选择商品 测试商品：星星套餐',exact=True).check()
+            modal.get_by_label('选择商品 测试商品：月亮套餐',exact=True).check()
+            expect(modal.get_by_label('选择商品 其他店铺的商品',exact=True)).to_have_count(0)
             modal.get_by_label('QA问题意图').fill('客户询价')
             modal.get_by_label('QA常见问法').fill('多少钱，怎么卖')
             modal.get_by_label('添加回复图片').set_input_files(upload)
@@ -117,6 +122,10 @@ def main():
             row=page.locator('article').filter(has_text='客户询价')
             expect(row.get_by_alt_text('回复图片')).to_be_visible()
             expect(row).to_contain_text('商品专属')
+            expect(row).to_contain_text('2 个商品')
+            stored=KnowledgeService(db).list_entries(1)
+            assert len(stored)==1 and stored[0]['item_ids']==['one','two']
+            original_id=stored[0]['id']
             page.get_by_role('button',name='停用 客户询价',exact=True).click()
             expect(row).to_contain_text('已停用')
             assert 'bg-red-100' in row.get_by_text('已停用',exact=True).get_attribute('class')
@@ -127,9 +136,39 @@ def main():
             page.get_by_role('button',name='编辑 客户询价',exact=True).click()
             modal=page.get_by_role('dialog',name='编辑固定回复')
             expect(modal.get_by_label('QA固定答案')).to_have_value('')
+            expect(modal.get_by_label('回复范围',exact=True)).to_be_enabled()
+            expect(modal.get_by_label('QA问题意图')).to_be_enabled()
+            expect(modal.get_by_label('选择商品 测试商品：星星套餐',exact=True)).to_be_checked()
+            expect(modal.get_by_label('选择商品 测试商品：月亮套餐',exact=True)).to_be_checked()
+            modal.get_by_label('QA问题意图').fill('套餐询价')
+            modal.get_by_label('选择商品 测试商品：星星套餐',exact=True).uncheck()
+            modal.get_by_label('搜索回复商品',exact=True).fill('太阳')
+            modal.get_by_label('选择商品 测试商品：太阳套餐',exact=True).check()
+            modal.get_by_label('搜索回复商品',exact=True).fill('')
             modal.get_by_label('QA固定答案').fill('点开商品购买页面查看对应价格哦亲。')
+            page.set_viewport_size(dict(width=390,height=844))
+            assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+            page.screenshot(path=str(args.output_dir/'multiselect-edit-mobile.png'))
+            page.set_viewport_size(dict(width=1440,height=1000))
+            modal.screenshot(path=str(args.output_dir/'multiselect-edit-dark.png'))
             modal.get_by_role('button',name='保存固定回复').click()
+            row=page.locator('article').filter(has_text='套餐询价')
             expect(row).to_contain_text('点开商品购买页面')
+            assert KnowledgeService(db).list_entries(1)[0]['id']==original_id
+            assert KnowledgeService(db).list_entries(1)[0]['item_ids']==['three','two']
+            page.reload(); expect(row).to_contain_text('2 个商品')
+            page.get_by_label('回复店铺',exact=True).select_option('b')
+            expect(page.locator('article').filter(has_text='套餐询价')).to_have_count(0)
+            page.get_by_label('回复店铺',exact=True).select_option('a')
+            page.get_by_role('button',name='编辑 套餐询价',exact=True).click()
+            modal=page.get_by_role('dialog',name='编辑固定回复')
+            modal.get_by_label('回复范围',exact=True).select_option('account')
+            expect(modal.get_by_label('回复所属商品',exact=True)).to_have_count(0)
+            modal.get_by_role('button',name='保存固定回复').click()
+            expect(row).to_contain_text('店铺')
+            assert KnowledgeService(db).list_entries(1)[0]['id']==original_id
+            assert KnowledgeService(db).list_entries(1)[0]['scope']=='account'
+            page.reload(); expect(row).to_contain_text('店铺')
             page.get_by_role('tab',name='关键词回复').click()
             page.get_by_role('button',name='添加关键词回复',exact=True).click()
             modal=page.get_by_role('dialog',name='添加关键词回复')
@@ -138,6 +177,17 @@ def main():
             expect(modal.get_by_alt_text('回复图片')).to_be_visible()
             modal.get_by_role('button',name='保存固定回复').click()
             expect(page.locator('article').filter(has_text='你好')).to_be_visible()
+            page.get_by_role('button',name='删除 你好',exact=True).click()
+            expect(page.get_by_role('alertdialog',name='删除固定回复')).to_be_visible()
+            page.get_by_role('button',name='取消',exact=True).click()
+            expect(page.locator('article').filter(has_text='你好')).to_be_visible()
+            page.get_by_role('button',name='删除 你好',exact=True).click()
+            page.get_by_role('button',name='确认删除',exact=True).click()
+            expect(page.locator('article').filter(has_text='你好')).to_have_count(0)
+            page.reload()
+            page.get_by_role('tab',name='关键词回复').click()
+            expect(page.locator('article').filter(has_text='你好')).to_have_count(0)
+            assert len(KnowledgeService(db).list_entries(1))==1
             page.get_by_role('button',name='添加关键词回复',exact=True).click()
             page.set_viewport_size(dict(width=390,height=844))
             expect(page.get_by_role('dialog')).to_be_visible()

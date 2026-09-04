@@ -9,10 +9,31 @@ from app.services.knowledge_documents import MAX_CONTENT_CHARS, MAX_OWNER_CHARS,
 SCOPE_PRIORITY = {"shared": 0, "account": 1, "item": 2}
 SCOPE_LABELS = {"shared": "共用资料", "account": "店铺资料", "item": "商品专属"}
 MAX_ENTRIES = 500
+MAX_QA_ITEMS = 200
 
 
 def normalize(value):
     return " ".join(unicodedata.normalize("NFKC", str(value)).casefold().split())
+
+
+def selected_items(value, legacy_item=""):
+    """Old single-item rows remain readable without rewriting their contents."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError) as error:
+            raise ValueError("商品选择格式无效") from error
+    if value is None:
+        value = []
+    if not isinstance(value, list) or len(value) > MAX_QA_ITEMS:
+        raise ValueError("一条回复最多选择200个商品")
+    if any(not isinstance(item, str) or not item.strip() or item != item.strip() or len(item) > 128 for item in value):
+        raise ValueError("商品编号无效")
+    if not value and legacy_item:
+        value = [legacy_item]
+    if legacy_item and legacy_item not in value:
+        raise ValueError("商品选择与原商品编号不一致")
+    return sorted(set(value))
 
 
 def initialize_schema(cursor):
@@ -40,6 +61,7 @@ def initialize_schema(cursor):
     for name, declaration in (("entry_type", "TEXT NOT NULL DEFAULT 'knowledge'"),
                               ("match_mode", "TEXT NOT NULL DEFAULT 'hybrid'"),
                               ("image_ids", "TEXT NOT NULL DEFAULT '[]'"),
+                              ("item_ids", "TEXT NOT NULL DEFAULT '[]'"),
                               ("revision", "INTEGER NOT NULL DEFAULT 1")):
         if name not in columns:
             cursor.execute(f"ALTER TABLE ai_knowledge_entries ADD COLUMN {name} {declaration}")
@@ -72,6 +94,7 @@ class KnowledgeService:
             entry["source"] = SCOPE_LABELS[entry["scope"]]
             from app.services.reply_assets import image_ids
             entry["image_ids"] = image_ids(entry.get("image_ids", "[]"))
+            entry["item_ids"] = selected_items(entry.get("item_ids"), entry["item_id"])
         return entries
 
     def list_entries(self, owner_id):
@@ -84,7 +107,17 @@ class KnowledgeService:
                 ORDER BY k.updated_at DESC, k.id DESC
             """, (owner_id,)))
 
-    def save(self, owner_id, data, *, commit=True, create_only=False):
+    def save(self, owner_id, data, *, commit=True, create_only=False, entry_id=None, expected_revision=None):
+        with self.db.lock:
+            if not commit:
+                # Backup import owns the surrounding transaction and its rollback.
+                return self._save(owner_id, data, create_only=create_only, entry_id=entry_id, expected_revision=expected_revision)
+            with self.db.conn:
+                if not self.db.conn.in_transaction:
+                    self.db.conn.execute('BEGIN IMMEDIATE')
+                return self._save(owner_id, data, create_only=create_only, entry_id=entry_id, expected_revision=expected_revision)
+
+    def _save(self, owner_id, data, *, create_only=False, entry_id=None, expected_revision=None):
         scope = data.get("scope")
         cookie_id = str(data.get("cookie_id") or "").strip()
         item_id = str(data.get("item_id") or "").strip()
@@ -92,6 +125,12 @@ class KnowledgeService:
         keywords = str(data.get("keywords") or "").strip()
         content = str(data.get("content") or "")
         entry_type = data.get("entry_type", "knowledge")
+        items = selected_items(data.get("item_ids"), item_id)
+        if scope != 'item' and items:
+            raise ValueError("只有商品专属回复可以选择商品")
+        if entry_type != 'qa' and len(items) > 1:
+            raise ValueError("商品多选仅用于固定回复")
+        item_id = items[0] if items else ''
         if entry_type == 'knowledge':
             content = content.strip()
         match_mode = data.get("match_mode", "hybrid")
@@ -117,15 +156,36 @@ class KnowledgeService:
             ReplyAssets(self.db).validate(owner_id, images)
             if cookie_id:
                 self.require_target(owner_id, cookie_id, item_id)
+                for selected in items[1:]:
+                    self.require_target(owner_id, cookie_id, selected)
             key = (owner_id, scope, cookie_id, item_id, normalize(topic))
-            existing = self.db.conn.execute("""
-                SELECT id, length(content), entry_type FROM ai_knowledge_entries
-                WHERE owner_id=? AND scope=? AND cookie_id=? AND item_id=? AND topic_key=?
-            """, key).fetchone()
+            if entry_id is not None:
+                current = self._owned_qa(owner_id, entry_id)
+                if current['revision'] != expected_revision:
+                    raise FileExistsError("这条回复已被修改，请重新打开后再保存")
+                if entry_type != 'qa':
+                    raise ValueError("固定回复不能改为知识资料")
+                existing = (current['id'], len(current['content']), current['entry_type'])
+            else:
+                existing = self.db.conn.execute("""
+                    SELECT id, length(content), entry_type FROM ai_knowledge_entries
+                    WHERE owner_id=? AND scope=? AND cookie_id=? AND item_id=? AND topic_key=?
+                """, key).fetchone()
             if existing and create_only:
                 raise FileExistsError("此范围已有同名主题，请更换名称，或在原资料中编辑；导入不会覆盖旧资料")
             if existing and existing[2] != entry_type:
                 raise FileExistsError("同范围已有不同类型的同名主题，请更换名称，不能覆盖固定QA或知识资料")
+            # Same topic may exist on disjoint products, never on overlapping ones.
+            peers = self._rows(self.db.conn.execute('''SELECT * FROM ai_knowledge_entries
+                WHERE owner_id=? AND scope=? AND cookie_id=? AND topic_key=?''',
+                (owner_id, scope, cookie_id, normalize(topic))))
+            for peer in peers:
+                if existing and peer['id'] == existing[0]:
+                    if entry_id is None and peer['item_ids'] != items:
+                        raise FileExistsError("商品范围已改变，请从编辑入口修改，不能用同名保存覆盖")
+                    continue
+                if scope != 'item' or set(items) & set(peer['item_ids']):
+                    raise FileExistsError("所选范围或商品已有同名主题，请更换意图名称或编辑原规则")
             total = self.db.conn.execute(
                 "SELECT COALESCE(SUM(length(content)),0) FROM ai_knowledge_entries WHERE owner_id=?", (owner_id,)
             ).fetchone()[0]
@@ -136,21 +196,38 @@ class KnowledgeService:
             ).fetchone()[0]
             if not existing and count >= MAX_ENTRIES:
                 raise ValueError("每个工作台用户最多保存500条资料")
-            self.db.conn.execute("""
-                INSERT INTO ai_knowledge_entries
-                    (owner_id,scope,cookie_id,item_id,topic_key,topic,keywords,content,enabled,entry_type,match_mode,image_ids)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(owner_id,scope,cookie_id,item_id,topic_key) DO UPDATE SET
-                    topic=excluded.topic, keywords=excluded.keywords, content=excluded.content,
-                    enabled=excluded.enabled, entry_type=excluded.entry_type, match_mode=excluded.match_mode,
-                    image_ids=excluded.image_ids, revision=ai_knowledge_entries.revision+1, updated_at=CURRENT_TIMESTAMP
-            """, (*key, topic, keywords, content, int(bool(data.get("enabled", True))), entry_type, match_mode, json.dumps(images)))
-            if commit:
-                self.db.conn.commit()
-            return self._rows(self.db.conn.execute("""
-                SELECT * FROM ai_knowledge_entries
-                WHERE owner_id=? AND scope=? AND cookie_id=? AND item_id=? AND topic_key=?
-            """, key))[0]
+            values = (scope, cookie_id, item_id, normalize(topic), topic, keywords, content,
+                      int(bool(data.get("enabled", True))), entry_type, match_mode, json.dumps(images), json.dumps(items))
+            if existing:
+                self.db.conn.execute('''UPDATE ai_knowledge_entries SET
+                    scope=?,cookie_id=?,item_id=?,topic_key=?,topic=?,keywords=?,content=?,enabled=?,
+                    entry_type=?,match_mode=?,image_ids=?,item_ids=?,revision=revision+1,updated_at=CURRENT_TIMESTAMP
+                    WHERE owner_id=? AND id=?''', (*values, owner_id, existing[0]))
+                saved_id = existing[0]
+            else:
+                saved_id = self.db.conn.execute('''INSERT INTO ai_knowledge_entries
+                    (scope,cookie_id,item_id,topic_key,topic,keywords,content,enabled,entry_type,match_mode,image_ids,item_ids,owner_id)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''', (*values, owner_id)).lastrowid
+            return self._rows(self.db.conn.execute("SELECT * FROM ai_knowledge_entries WHERE id=?", (saved_id,)))[0]
+
+    def _owned_qa(self, owner_id, entry_id):
+        entries = self._rows(self.db.conn.execute('''SELECT k.* FROM ai_knowledge_entries k
+            WHERE k.id=? AND k.owner_id=? AND k.entry_type='qa' AND
+                (k.scope='shared' OR EXISTS (SELECT 1 FROM cookies c WHERE c.id=k.cookie_id AND c.user_id=k.owner_id))''',
+            (entry_id, owner_id)))
+        if not entries:
+            raise PermissionError("固定回复不存在或无权限")
+        return entries[0]
+
+    def delete_qa(self, owner_id, entry_id, revision):
+        with self.db.lock, self.db.conn:
+            if not self.db.conn.in_transaction:
+                self.db.conn.execute('BEGIN IMMEDIATE')
+            entry = self._owned_qa(owner_id, entry_id)
+            if entry['revision'] != revision:
+                raise FileExistsError("这条回复已被修改，请刷新后再删除")
+            # Attachments may also be used by another QA/quick phrase. Never remove them here.
+            self.db.conn.execute('DELETE FROM ai_knowledge_entries WHERE owner_id=? AND id=?', (owner_id, entry_id))
 
     def restore_backup(self, table_data, owner_id=None, asset_map=None):
         """Merge validated facts inside the caller's transaction, never trust IDs.
@@ -160,7 +237,7 @@ class KnowledgeService:
         """
         columns = table_data.get("columns", [])
         allowed = {"id", "owner_id", "scope", "cookie_id", "item_id", "topic", "topic_key",
-                   "keywords", "content", "enabled", "updated_at", "entry_type", "match_mode", "image_ids", "revision"}
+                   "keywords", "content", "enabled", "updated_at", "entry_type", "match_mode", "image_ids", "item_ids", "revision"}
         if len(columns) != len(set(columns)) or not set(columns).issubset(allowed):
             raise ValueError("知识资料备份字段无效")
         for row in table_data.get("rows", []):
@@ -181,11 +258,12 @@ class KnowledgeService:
             self.require_target(owner_id, cookie_id, item_id)
             entries = self._rows(self.db.conn.execute("""
                 SELECT * FROM ai_knowledge_entries WHERE owner_id=? AND enabled=1 AND
-                    (scope='shared' OR (cookie_id=? AND scope='account') OR
-                     (cookie_id=? AND item_id=? AND scope='item'))
-            """, (owner_id, cookie_id, cookie_id, item_id)))
+                    (scope='shared' OR (cookie_id=? AND scope IN ('account','item')))
+            """, (owner_id, cookie_id)))
         by_topic = {}
         for entry in sorted(entries, key=lambda entry: SCOPE_PRIORITY[entry["scope"]]):
+            if entry['scope'] == 'item' and item_id not in entry['item_ids']:
+                continue
             if entry_type is not None and entry['entry_type'] != entry_type:
                 continue
             by_topic[entry["topic_key"]] = entry

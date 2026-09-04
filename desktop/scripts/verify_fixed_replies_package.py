@@ -77,10 +77,24 @@ def main():
             db.execute("INSERT INTO cookies(id,value,user_id) VALUES('offline-handoff','not-a-platform-cookie',?)",(owner_id,))
             db.execute("INSERT INTO cookie_status(cookie_id,enabled) VALUES('offline-handoff',0)")
             db.execute("INSERT INTO ai_reply_settings(cookie_id,ai_enabled) VALUES('offline-handoff',0)")
+            db.execute("INSERT INTO item_info(cookie_id,item_id,item_title) VALUES('offline-handoff','one','离线商品一'),('offline-handoff','two','离线商品二')")
             db.execute("""INSERT INTO chat_human_handoffs
                 (owner_id,cookie_id,chat_id,revision,pending,reason,buyer_id,buyer_name,item_id,created_ms,send_status)
                 VALUES(?,'offline-handoff','offline-chat',1,1,'unclear','nobody','离线测试','',1,'unknown')""",(owner_id,))
             db.commit()
+            # Real frozen CRUD API, still on a disabled synthetic account.
+            grouped=post('/ai-knowledge/qa',json=dict(scope='item',cookie_id='offline-handoff',
+                item_ids=['one','two'],topic='多商品问候',keywords='你好',image_ids=[asset['id']]))['entry']
+            assert grouped['item_ids']==['one','two'] and grouped['content']==''
+            route=base+'/ai-knowledge/qa/'+str(grouped['id'])
+            update=session.put(route,json={**grouped,'topic':'改名问候','scope':'account','item_id':'','item_ids':[]})
+            update.raise_for_status(); changed=update.json()['entry']
+            assert changed['id']==grouped['id'] and changed['scope']=='account' and changed['item_ids']==[]
+            assert session.put(route,json=grouped).status_code==409
+            assert session.delete(route,params={'revision':grouped['revision']}).status_code==409
+            session.delete(route,params={'revision':changed['revision']}).raise_for_status()
+            assert session.put(route,json=changed).status_code==404
+            assert session.get(base+'/ai-knowledge/images/'+asset['id']).content==image.content
             entries=session.get(base+'/chat/handoffs').json()['entries']
             assert len(entries)==1 and entries[0]['send_status']=='unknown'
             endpoint='/chat/handoffs/offline-handoff/offline-chat/resume'
@@ -93,7 +107,8 @@ def main():
             assert db.execute('PRAGMA quick_check').fetchone()[0]=='ok'
             db.close()
             report=dict(status='passed',ready_seconds=ready,packaged_qa_image=True,phrase_image=True,backup_roundtrip=True,
-                        private_asset_guard=True,handoff_resume=True,ai_enablement_unchanged=True,buyer_messages_sent=0)
+                        private_asset_guard=True,handoff_resume=True,multiselect_crud=True,
+                        ai_enablement_unchanged=True,buyer_messages_sent=0)
             (args.output_dir/'result.json').write_text(json.dumps(report,indent=2)+'\n')
             print(json.dumps(report),flush=True)
         finally:

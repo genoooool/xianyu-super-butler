@@ -13,6 +13,10 @@ CLARIFY_REPLY = HANDOFF_REPLY
 MAX_CANDIDATES = 60
 
 
+class ReplyTargetUnavailable(ValueError):
+    """Local ownership is unconfirmed; this is not an uncertain buyer question."""
+
+
 @dataclass(frozen=True)
 class FixedDecision:
     status: str
@@ -47,7 +51,7 @@ class FixedReplies:
                 raise PermissionError("账号不存在")
             if item_id and not self.db.conn.execute("SELECT 1 FROM item_info WHERE cookie_id=? AND item_id=?", (cookie_id, item_id)).fetchone():
                 # Never silently apply a shared price to an unknown product.
-                raise ValueError("商品未确认，请先同步商品")
+                raise ReplyTargetUnavailable("当前店铺未确认此商品，跳过自动回复")
             return self.knowledge.effective_entries(owner, cookie_id, item_id, entry_type='qa')
 
     @staticmethod
