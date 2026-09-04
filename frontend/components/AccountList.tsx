@@ -9,7 +9,6 @@ import {
   checkQRLoginStatus,
   updateAccountRemark,
   updateAccountAutoConfirm,
-  updateAccountPauseDuration,
   updateAccountCookie,
   updateAccountLoginInfo,
   updateAccountAISettings,
@@ -21,7 +20,7 @@ import {
   requestFreshCaptchaUrl,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
-import {Power, Edit2, Trash2, QrCode, X, Check, Loader2, MessageSquare, RefreshCw, Save, User, Clock, Key, Eye, EyeOff, Bot, Settings, MapPin, Users, ShieldCheck} from 'lucide-react';
+import {Power, Edit2, Trash2, QrCode, X, Check, Loader2, MessageSquare, RefreshCw, Save, User, Key, Eye, EyeOff, Bot, Settings, MapPin, Users, ShieldCheck} from 'lucide-react';
 import { EmptyState, PageHeader, PageLoading } from './ui';
 
 type ModalType = 'edit' | 'ai-settings' | null;
@@ -66,7 +65,6 @@ const AccountList: React.FC = () => {
     remark: '',
     cookie: '',
     auto_confirm: false,
-    pause_duration: 0,
     username: '',
     login_password: '',
     show_browser: false,
@@ -325,7 +323,6 @@ const AccountList: React.FC = () => {
       remark: account.remark || account.note || '',
       cookie: account.cookie || account.value || '',
       auto_confirm: account.auto_confirm || false,
-      pause_duration: account.pause_duration || 0,
       username: account.username || '',
       login_password: account.login_password || '',
       show_browser: account.show_browser || false,
@@ -383,11 +380,6 @@ const AccountList: React.FC = () => {
       // 更新自动确认
       if (editForm.auto_confirm !== editingAccount.auto_confirm) {
         promises.push(updateAccountAutoConfirm(editingAccount.id, editForm.auto_confirm));
-      }
-
-      // 更新暂停时长
-      if (editForm.pause_duration !== (editingAccount.pause_duration || 0)) {
-        promises.push(updateAccountPauseDuration(editingAccount.id, editForm.pause_duration));
       }
 
       // 更新登录信息
@@ -669,7 +661,6 @@ const AccountList: React.FC = () => {
                 <div className="flex flex-wrap gap-2">
                    {blockedState && <span className="status-badge bg-red-100 text-red-700">{blockedState.verification_type === 'slider' ? '滑块验证' : blockedState.verification_type === 'face' ? '人脸验证' : '平台风控'}{blockedState.blocked ? ` · ${Math.max(1, Math.ceil(blockedState.remaining_seconds / 60))} 分钟` : ''}</span>}
                    {account.auto_confirm && <span className="status-badge status-badge-warning flex items-center gap-1.5"><MessageSquare className="w-3 h-3"/> 自动确认发货</span>}
-                   {account.pause_duration > 0 && <span className="status-badge status-badge-info flex items-center gap-1.5"><Clock className="w-3 h-3"/> 暂停 {account.pause_duration} 分钟</span>}
                 </div>
                 {/* 登录态过期给出明确动作，只挂一个徽标用户不知道该做什么 */}
                 {account.runtime_state === 'need_relogin' && (
@@ -941,23 +932,7 @@ const AccountList: React.FC = () => {
                 </button>
               </div>
 
-              {/* 暂停时长 */}
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-blue-500" />
-                  暂停处理时长（分钟）
-                </label>
-                <input
-                  type="number"
-                  value={editForm.pause_duration}
-                  onChange={(e) => setEditForm({ ...editForm, pause_duration: parseInt(e.target.value) || 0 })}
-                  placeholder="0"
-                  min="0"
-                  max="1440"
-                  className="ios-input w-full rounded-md px-3 py-2.5"
-                />
-                <p className="text-xs text-gray-500 mt-1">设置后会暂停处理该账号的订单，到时间后自动恢复</p>
-              </div>
+              <p className="text-xs text-gray-500">人工接入只关闭对应会话的自动回复；处理后请在聊天窗口打开 AI 开关，不会倒计时恢复，也不影响订单发货。</p>
 
               {/* 登录信息 */}
               <div className="border-t border-gray-200 pt-5">

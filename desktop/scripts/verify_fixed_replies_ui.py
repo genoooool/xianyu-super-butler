@@ -3,6 +3,7 @@
 import argparse
 import io
 import json
+import re
 from pathlib import Path
 import socket
 import sqlite3
@@ -58,7 +59,7 @@ def main():
     add_get('/cookies/details',[dict(id='a',nickname='测试店铺 A',enabled=False,auto_confirm=True),dict(id='b',nickname='测试店铺 B',enabled=False)])
     add_get('/ai-reply-settings',{})
     add_get('/api/risk-control/status',dict(success=True,accounts=[]))
-    add_get('/items',dict(items=[dict(cookie_id='a',item_id='one',item_title='测试商品：星星套餐'),
+    add_get('/items',dict(items=[dict(cookie_id='a',item_id='one',item_title='测试商品：星星套餐',item_image='/static/test-product.png'),
         dict(cookie_id='a',item_id='two',item_title='测试商品：月亮套餐'),
         dict(cookie_id='a',item_id='three',item_title='测试商品：太阳套餐'),
         dict(cookie_id='b',item_id='b-only',item_title='其他店铺的商品')]))
@@ -71,7 +72,7 @@ def main():
     add_get('/chat/accounts',dict(data=[dict(accountId='a',displayName='测试店铺 A',connected=True),dict(accountId='b',displayName='测试店铺 B',connected=False)]))
     @app.get('/chat/conversations/{cookie_id}')
     def conversations(cookie_id: str):
-        rows=[dict(cid='chat',otherUserId='buyer',otherUserName='离线测试买家',lastMessageSummary='想看报价图',lastMessageTime=1,unreadCount=1,itemId='one')] if cookie_id=='a' else []
+        rows=[dict(cid='chat',otherUserId='buyer',otherUserName='离线测试买家',lastMessageSummary='想看报价图',lastMessageTime=1,unreadCount=1,itemId='one',itemImage='/static/broken-product.png')] if cookie_id=='a' else []
         return dict(data=dict(conversations=rows,hasMore=False))
     add_get('/chat/messages/{cookie_id}/{cid}',dict(data=dict(messages=[],hasMore=False)))
     @app.get('/quick-phrases')
@@ -108,10 +109,12 @@ def main():
         with sync_playwright() as playwright:
             browser=playwright.chromium.launch(executable_path=args.browser,headless=True)
             context=browser.new_context(viewport=dict(width=1440,height=1000))
-            page=context.new_page(); errors=[]; failed=[]
+            page=context.new_page(); errors=[]; failed=[]; expected_failures=set()
             page.on('pageerror',lambda error: errors.append(str(error)))
-            page.on('response',lambda response: failed.append(response.url) if response.status>=400 else None)
+            page.on('response',lambda response: failed.append(response.url) if response.status>=400 and (response.url,response.status) not in expected_failures else None)
             page.route('**/*',lambda route: route.continue_() if route.request.url.startswith(base+'/') else route.abort())
+            page.route('**/static/broken-product.png',lambda route: route.abort())
+            page.route('**/static/test-product.png',lambda route: route.fulfill(body=output.getvalue(),content_type='image/png'))
             page.add_init_script("localStorage.setItem('auth_token','offline-test'); localStorage.setItem('active_page','auto-reply')")
             page.goto(base)
             page.get_by_role('button',name='添加意图回复',exact=True).click()
@@ -219,6 +222,12 @@ def main():
             assert phrases.list(1)[0]['content']=='' and phrases.list(1)[0]['image_ids']
             page.get_by_role('button',name='消息中心',exact=True).click()
             page.get_by_text('离线测试买家',exact=True).first.click()
+            ai_switch=page.get_by_role('switch',name='当前会话 AI 自动回复')
+            expect(ai_switch).to_have_attribute('aria-checked','true')
+            expect(page.get_by_alt_text('商品图片')).to_have_attribute('src','/static/test-product.png')
+            assert page.get_by_alt_text('商品图片').evaluate('(img)=>img.complete && img.naturalWidth>0')
+            expect(ai_switch.locator('span').nth(1)).to_have_css('background-color','rgb(67, 136, 100)')
+            page.screenshot(path=str(args.output_dir/'chat-product-and-ai-on.png'),animations='disabled')
             page.get_by_title('快捷短语',exact=True).click()
             page.get_by_role('button',name='[默认] 价格图片').click()
             expect(page.locator('img[alt="回复图片"]:visible')).to_be_visible()
@@ -228,6 +237,8 @@ def main():
             composer=page.locator('footer:visible')
             expect(composer.get_by_label('添加回复图片')).to_have_count(0)
             assert len(sends)==1 and sends[0]['text']=='' and len(sends[0]['image_ids'])==1
+            expect(ai_switch).to_have_attribute('aria-checked','false')
+            expect(ai_switch.locator('span').nth(1)).to_have_css('background-color','rgb(164, 91, 91)')
             page.screenshot(path=str(args.output_dir/'message-after-send.png'))
 
             # The toolbar must reopen the picker; an unconfirmed send must retain the draft.
@@ -246,66 +257,125 @@ def main():
             page.screenshot(path=str(args.output_dir/'message-unconfirmed-draft.png'))
 
             # Local takeover state must remain visible independently of unread counts/platform paging.
-            first=handoffs.begin(1,'a','chat',0,1,'unclear','buyer','离线测试买家','one')
+            ai_switch.click()
+            expect(ai_switch).to_have_attribute('aria-checked','true')
+            expect(page.get_by_role('alertdialog')).to_have_count(0)
+            state=handoffs.state(1,'a','chat')
+            first=handoffs.begin(1,'a','chat',state['revision'],state['resumed_ms']+1,'unclear','buyer','离线测试买家','one')
             handoffs.finish_send(first,'confirmed')
             handoffs.begin(1,'a','not-in-platform-page',0,1,'unknown','buyer2','列表外买家','one')
             handoffs.begin(1,'b','chat',0,1,'unknown','buyer','另一店买家','')
-            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_be_visible()
-            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_have_css('border-radius','9999px')
+            expect(ai_switch).to_have_attribute('aria-checked','false')
             expect(page.get_by_text('转人工话术已收到平台发送回执。',exact=True)).to_be_visible()
             while page.get_by_label('关闭提示',exact=True).count(): page.get_by_label('关闭提示',exact=True).first.click()
-            page.get_by_role('button',name='已处理，恢复自动回复').click(trial=True)
+            ai_switch.click(trial=True)
             page.screenshot(path=str(args.output_dir/'handoff-dark.png'),animations='disabled')
             page.reload()
             page.get_by_role('button',name='消息中心',exact=True).click()
             page.get_by_text('离线测试买家',exact=True).first.click()
-            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_be_visible()
+            expect(ai_switch).to_have_attribute('aria-checked','false')
             page.emulate_media(color_scheme='light')
             page.screenshot(path=str(args.output_dir/'handoff-light.png'))
 
-            # A failed reply keeps the takeover; confirmed image-only quick reply resumes it.
+            # Failed and confirmed replies both keep automatic replies off.
             composer.get_by_placeholder('输入消息',exact=True).fill('人工回复未确认')
             composer.get_by_role('button',name='发送',exact=True).click()
             expect(page.get_by_text('发送未确认：离线模拟未确认。请先检查原会话，避免重复发送。',exact=True)).to_be_visible()
             assert len(sends)==3 and len(handoffs.pending(1))==3
-            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_be_visible()
+            expect(ai_switch).to_have_attribute('aria-checked','false')
             composer.get_by_placeholder('输入消息',exact=True).fill('')
             page.get_by_title('快捷短语',exact=True).click()
             page.get_by_role('button',name='[默认] 价格图片').click()
             send_success=True
             composer.get_by_role('button',name='发送',exact=True).click()
-            expect(page.get_by_text('消息已发送，已恢复此会话的自动回复',exact=True)).to_be_visible()
-            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_have_count(0)
+            expect(ai_switch).to_have_attribute('aria-checked','false')
             expect(composer.get_by_label('添加回复图片')).to_have_count(0)
             assert len(sends)==4 and len(handoffs.pending(1))==2
-            page.screenshot(path=str(args.output_dir/'handoff-auto-resumed.png'))
+            assert handoffs.state(1,'a','chat')['reason']=='manual_reply'
+            page.screenshot(path=str(args.output_dir/'handoff-manual-stays-off.png'))
 
-            # Keep the explicit recovery control for replies handled outside this workbench.
+            # Only the explicit switch reopens; no confirm modal and no old-message replay.
+            expect(ai_switch).to_be_enabled()
+            ai_switch.click()
+            expect(ai_switch).to_have_attribute('aria-checked','true')
+            expect(page.get_by_role('alertdialog')).to_have_count(0)
             state=handoffs.state(1,'a','chat')
             first=handoffs.begin(1,'a','chat',state['revision'],state['resumed_ms']+1,'unclear','buyer','离线测试买家','one')
             handoffs.finish_send(first,'confirmed')
-            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_be_visible()
+            expect(ai_switch).to_have_attribute('aria-checked','false')
             while page.get_by_label('关闭提示',exact=True).count(): page.get_by_label('关闭提示',exact=True).first.click()
-            page.get_by_role('button',name='已处理，恢复自动回复').click()
-            expect(page.get_by_role('alertdialog',name='恢复自动回复')).to_be_visible()
-            page.get_by_role('button',name='取消',exact=True).click()
             assert len(handoffs.pending(1))==3
-            page.get_by_role('button',name='已处理，恢复自动回复').click()
-            page.get_by_role('button',name='确认恢复',exact=True).click()
-            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_have_count(0)
+            expect(ai_switch).to_be_enabled()
+            ai_switch.click()
+            expect(ai_switch).to_have_attribute('aria-checked','true')
+            expect(page.get_by_role('alertdialog')).to_have_count(0)
             assert len(handoffs.pending(1))==2
             page.get_by_text('列表外买家',exact=True).first.click()
+            expect(ai_switch).to_have_attribute('aria-checked','false')
             expect(page.get_by_text('转人工话术发送结果未确认，请先查看原会话，避免重复发送。',exact=True)).to_be_visible()
             page.set_viewport_size(dict(width=390,height=844))
-            expect(page.get_by_role('button',name='已处理，恢复自动回复')).to_be_visible()
+            expect(ai_switch).to_be_visible()
             while page.get_by_label('关闭提示',exact=True).count(): page.get_by_label('关闭提示',exact=True).first.click()
-            page.get_by_role('button',name='已处理，恢复自动回复').click(trial=True)
+            ai_switch.click(trial=True)
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
             page.screenshot(path=str(args.output_dir/'handoff-mobile.png'),animations='disabled')
             page.set_viewport_size(dict(width=1440,height=1000))
             page.get_by_label('消息账号').select_option('b')
             expect(page.get_by_text('另一店买家',exact=True).first).to_be_visible()
             expect(page.get_by_text('列表外买家',exact=True)).to_have_count(0)
+            page.get_by_text('另一店买家',exact=True).first.click()
+            expect(ai_switch).to_have_attribute('aria-checked','false')
+            # The same cid in A is on; B remains off even after a page reload.
+            assert handoffs.control(1,'a','chat')['enabled'] is True
+            assert handoffs.control(1,'b','chat')['enabled'] is False
+            page.get_by_label('消息账号').select_option('a')
+            page.get_by_text('离线测试买家',exact=True).first.click()
+            expect(ai_switch).to_have_attribute('aria-checked','true')
+            # Both sources unavailable: clean Package icon, no browser broken image.
+            page.route('**/static/test-product.png',lambda route: route.abort())
+            page.reload()
+            page.get_by_role('button',name='消息中心',exact=True).click()
+            page.get_by_text('离线测试买家',exact=True).first.click()
+            expect(page.get_by_role('img',name='暂无商品图片')).to_be_visible()
+            expect(page.get_by_alt_text('商品图片')).to_have_count(0)
+            expect(ai_switch).to_have_attribute('aria-checked','true')
+            page.screenshot(path=str(args.output_dir/'chat-product-fallback.png'),animations='disabled')
+            # Slow polling must not overwrite a newer click, even after its PUT has completed.
+            control_url=base+'/chat/handoffs/a/chat'
+            held=[]
+            def hold_read(route):
+                if route.request.method=='GET': held.append(route)
+                else: route.continue_()
+            old_state=handoffs.control(1,'a','chat')
+            page.route(control_url,hold_read)
+            page.wait_for_timeout(2200)
+            assert held
+            ai_switch.click()
+            expect(ai_switch).to_have_attribute('aria-checked','false')
+            held.pop(0).fulfill(json=old_state)
+            page.wait_for_timeout(100)
+            expect(ai_switch).to_have_attribute('aria-checked','false')
+            page.unroute(control_url,hold_read)
+            for route in held: route.fulfill(json=old_state)
+            # A conflicting update is reconciled, never blindly retried or confirmed by a modal.
+            saved=handoffs.control(1,'a','chat')
+            handoffs.set_enabled(1,'a','chat',False,saved['revision'])
+            expected_failures.add((control_url,409))
+            ai_switch.click()
+            expect(page.get_by_role('alert').filter(has_text='开关更新未确认')).to_be_visible()
+            expect(ai_switch).to_have_attribute('aria-checked','false')
+            expect(page.get_by_role('alertdialog')).to_have_count(0)
+            # A failed state read displays unknown/disabled, not a deceptively green switch.
+            expected_failures.add((control_url,503))
+            page.route(control_url,lambda route: route.fulfill(status=503,json={'detail':'offline test'}))
+            page.reload()
+            page.get_by_role('button',name='消息中心',exact=True).click()
+            page.get_by_text('离线测试买家',exact=True).first.click()
+            expect(ai_switch).to_be_disabled()
+            expect(ai_switch).to_have_attribute('title', re.compile('状态暂不可用'))
+            page.unroute(control_url)
+            expect(ai_switch).to_be_enabled()
+            expect(ai_switch).to_have_attribute('aria-checked','false')
             assert len(sends)==4, 'Resume and unconfirmed sends must never automatically replay a buyer message'
             page.get_by_role('button',name='账号管理',exact=True).click()
             account=page.locator('article').filter(has_text='测试店铺 A')

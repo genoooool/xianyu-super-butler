@@ -451,6 +451,14 @@ export interface HumanHandoff {
   send_status: 'unknown' | 'confirmed' | 'withheld';
 }
 
+export interface ConversationReplyControl {
+  cookie_id: string;
+  chat_id: string;
+  enabled: boolean;
+  revision: number;
+  reason: string;
+}
+
 export interface ChatMessage {
   messageId: string;
   senderId: string;

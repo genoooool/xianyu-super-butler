@@ -7,7 +7,7 @@ import {
   DeliveryBlockRule, PersonalBlacklistEntry, MessageNotification,
   NotificationChannel, NotificationChannelType, RiskControlLog, SystemLog,
   MessageFilter, MessageFilterType, AutoReplyLog
-  , ChatAccount, ChatConversation, ChatMessage, HumanHandoff, ProductMaterial,
+  , ChatAccount, ChatConversation, ChatMessage, HumanHandoff, ConversationReplyControl, ProductMaterial,
   ProductFilterRule, ProductDeleteRule, AutomationTaskRun,
   ProductAutomationResult, ProductDeletePreview, QuickPhrase,
   AnnouncementPayload
@@ -1030,6 +1030,16 @@ export const resumeHumanHandoff = async (entry: HumanHandoff): Promise<{ success
   return post(`/chat/handoffs/${encodeURIComponent(entry.cookie_id)}/${encodeURIComponent(entry.chat_id)}/resume`, { revision: entry.revision });
 };
 
+export const getConversationReplyControl = (cookieId: string, cid: string): Promise<ConversationReplyControl> =>
+  get(`/chat/handoffs/${encodeURIComponent(cookieId)}/${encodeURIComponent(cid)}`);
+
+export const setConversationReplyControl = (
+  cookieId: string,
+  cid: string,
+  data: { enabled: boolean; revision: number; buyer_id: string; buyer_name: string; item_id: string },
+): Promise<ConversationReplyControl> =>
+  put(`/chat/handoffs/${encodeURIComponent(cookieId)}/${encodeURIComponent(cid)}`, data);
+
 export const getChatAccounts = async (): Promise<ChatAccount[]> => {
   const response = await get<{ success: boolean; data: ChatAccount[] }>('/chat/accounts');
   return response.data || [];
@@ -1068,7 +1078,7 @@ export const sendChatMessage = async (
   data: { cid: string; to_user_id: string; text: string; image_ids?: string[] }
 ): Promise<{ success: boolean; message: string; data?: {
   messageId?: string;
-  handoff_auto_resume?: 'resumed' | 'not_pending' | 'changed' | 'failed';
+  handoff_auto_resume?: 'resumed' | 'not_pending' | 'changed' | 'failed' | 'disabled';
   handoff_resumed_revision?: number;
 } }> => {
   return post(`/chat/send/${encodeURIComponent(cookieId)}`, data);

@@ -78,8 +78,8 @@ class MessageIdentityPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.modules.stop()
         handoff_tests.Fixture.tearDown(self)
 
-    async def push(self, mid='platform-1.PNM', stamp=None, chat='chat', text='你好', biz=None):
-        detail = dict(senderUserId='buyer', reminderContent=text, reminderUrl='https://example.test/?itemId=item')
+    async def push(self, mid='platform-1.PNM', stamp=None, chat='chat', text='你好', biz=None, sender='buyer'):
+        detail = dict(senderUserId=sender, reminderContent=text, reminderUrl='https://example.test/?itemId=item')
         if biz is not None:
             detail['bizTag'] = json.dumps({'messageId': biz})
         parsed = {'1': {'2': chat+'@goofish', '5': stamp or int(time.time()*1000), '10': detail}}
@@ -90,6 +90,16 @@ class MessageIdentityPipelineTests(unittest.IsolatedAsyncioTestCase):
         await self.instance.handle_message(envelope, self.ws)
         await asyncio.gather(*self.tasks)
         return parsed
+
+    async def test_self_order_card_is_not_manual_takeover_but_phone_text_is(self):
+        observer = AsyncMock()
+        self.env['pause_manager'].observe_self_message = observer
+        self.instance._is_system_or_order_event = lambda text: text == '[你已发货]'
+        await self.push(text='[你已发货]', sender='seller')
+        observer.assert_not_called()
+        await self.push(mid='phone-2', text='我来处理', sender='seller')
+        observer.assert_awaited_once()
+        self.instance.send_im_text.assert_not_called()
 
     async def test_same_text_new_platform_messages_each_reach_qa(self):
         for i in range(3):

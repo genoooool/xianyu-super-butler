@@ -4,7 +4,6 @@ import {
   Image,
   Inbox,
   Loader2,
-  Package,
   Plus,
   RefreshCw,
   Search,
@@ -36,7 +35,6 @@ import {
   getChatConversations,
   getChatMessages,
   getHumanHandoffs,
-  resumeHumanHandoff,
   getItems,
   getMessageFilters,
   getQuickPhrases,
@@ -47,6 +45,9 @@ import {
 import { confirmAction, notify } from '../services/feedback';
 import { EmptyState, SectionHeader } from './ui';
 import { ReplyImagePicker } from './ReplyMedia';
+import { ConversationAiSwitch } from './ConversationAiSwitch';
+import { ChatProductImage } from './ChatProductImage';
+import { useConversationReplyControl } from './useConversationReplyControl';
 import type { NotificationNavigation } from '../services/desktopNotifications';
 
 type View = 'messages' | 'filters';
@@ -172,7 +173,6 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const conversationsAccountRef = useRef('');
   const [handoffs, setHandoffs] = useState<HumanHandoff[]>([]);
-  const [resumingHandoff, setResumingHandoff] = useState(false);
   const [handoffLoadError, setHandoffLoadError] = useState(false);
   const handoffsRef = useRef(handoffs);
   handoffsRef.current = handoffs;
@@ -181,6 +181,8 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
   // 按图片地址记录加载失败的头像，避免反复请求同一个取不到的外部地址
   const [failedAvatars, setFailedAvatars] = useState<Set<string>>(new Set());
   const [activeCid, setActiveCid] = useState('');
+  const [controlRefresh, setControlRefresh] = useState(0);
+  const replyControl = useConversationReplyControl(activeAccountId, activeCid, isActive, controlRefresh);
   const [notificationChat, setNotificationChat] = useState<{ accountId: string; conversation: ChatConversation } | null>(null);
   const notificationChatRef = useRef(notificationChat);
   notificationChatRef.current = notificationChat;
@@ -226,7 +228,9 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
 
   const activeAccount = accounts.find((account) => account.accountId === activeAccountId);
   const accountHandoffs = handoffs.filter((entry) => entry.cookie_id === activeAccountId);
-  const activeHandoff = accountHandoffs.find((entry) => entry.chat_id === activeCid);
+  const activeHandoff = accountHandoffs.find((entry) => entry.chat_id === activeCid
+    && !(replyControl.state && replyControl.state.revision >= entry.revision
+      && (replyControl.state.enabled || ['manual_switch', 'manual_reply'].includes(replyControl.state.reason))));
   // Pending chats stay reachable even when the platform list is offline, paged or rate-limited.
   const allConversations = useMemo(() => {
     // A store switch renders before its async list arrives. Never let the old
@@ -288,21 +292,16 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [isActive]);
 
-  const handleResumeHandoff = async () => {
-    if (!activeHandoff || resumingHandoff) return;
-    const target = activeHandoff;
-    const accepted = await confirmAction('确认已处理完这段会话？恢复后只回复新消息，不补发旧消息，也不会开启原本关闭的 AI。', {
-      title: '恢复自动回复', confirmLabel: '确认恢复', danger: false,
-    });
-    if (!accepted) return;
-    setResumingHandoff(true);
+  const handleToggleReply = async () => {
+    if (!activeConversation) return;
     try {
-      const result = await resumeHumanHandoff(target);
-      setHandoffs((entries) => entries.filter((entry) => !(entry.cookie_id === target.cookie_id && entry.chat_id === target.chat_id && entry.revision === target.revision)));
-      notify(result.message, 'success');
+      const result = await replyControl.toggle({ buyer_id: activeConversation.otherUserId,
+        buyer_name: activeConversation.otherUserName || '', item_id: activeConversation.itemId || '' });
+      if (result) setHandoffs((entries) => entries.filter((entry) => !(entry.cookie_id === result.cookie_id
+        && entry.chat_id === result.chat_id && entry.revision <= result.revision)));
     } catch (error) {
-      notify(`恢复未完成：${(error as Error).message}`, 'error');
-    } finally { setResumingHandoff(false); }
+      notify(`开关更新未确认：${(error as Error).message}。已重新读取状态，请查看开关。`, 'error');
+    }
   };
 
   const selectedAllFilters = filters.length > 0
@@ -581,24 +580,16 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
         image_ids: draftImages,
       });
       if (!result.success) throw new Error(result.message || '未确认发送结果');
-      if (result.data?.handoff_auto_resume === 'resumed') {
-        setHandoffs(entries => entries.filter(entry => !(entry.cookie_id === activeAccountId
-          && entry.chat_id === activeConversation.cid && entry.revision === result.data?.handoff_resumed_revision)));
-      }
       if (destinationRef.current === sendingTo) {
         setDraft(''); setDraftImages([]); setShowImagePicker(false);
         await Promise.all([loadMessages(true), loadConversations(true)]);
       }
-      const resumeStatus = result.data?.handoff_auto_resume;
-      if (resumeStatus === 'failed' || resumeStatus === 'changed') {
-        notify('消息已发送，自动回复状态未能确认恢复，请刷新检查；不要重复发送消息。', 'warning');
-      } else {
-        notify(resumeStatus === 'resumed' ? '消息已发送，已恢复此会话的自动回复' : '消息已发送', 'success');
-      }
+      notify('消息已发送', 'success');
     } catch (error) {
       notify(`发送未确认：${(error as Error).message}。请先检查原会话，避免重复发送。`, 'error');
     } finally {
       setSending(false);
+      setControlRefresh((value) => value + 1);
     }
   };
 
@@ -844,32 +835,19 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
               <div role="status" className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] bg-[var(--surface-subtle)] px-5 py-3">
                 <div className="min-w-0 text-xs text-[var(--text-muted)]">
                   <span className="mr-2 inline-flex rounded-full bg-red-100 px-2 py-1 font-bold text-red-700">待人工处理</span>
-                  自动回复已暂停。在此回复成功后会自动恢复；发送未确认或仅重启软件不会恢复。
+                  自动回复已关闭。处理完成后，请手动打开输入框右上角的 AI 开关；不会自动恢复。
                   <p className="mt-2">{activeHandoff.send_status === 'confirmed'
                     ? '转人工话术已收到平台发送回执。'
                     : activeHandoff.send_status === 'withheld'
                       ? '发送前状态已改变，转人工话术未发送，请直接接手。'
                       : '转人工话术发送结果未确认，请先查看原会话，避免重复发送。'}</p>
                 </div>
-                <button type="button" disabled={resumingHandoff} onClick={() => void handleResumeHandoff()}
-                  className="shrink-0 rounded-full bg-[var(--brand)] px-4 py-2 text-xs font-bold text-[var(--brand-ink)] disabled:opacity-50">
-                  {resumingHandoff ? '正在恢复…' : '已处理，恢复自动回复'}
-                </button>
               </div>
             )}
 
             <div className="flex min-h-[84px] shrink-0 items-center gap-3 border-b border-[var(--border)] px-4 py-3 sm:min-h-[92px] sm:gap-4 sm:px-5">
-              {normalizeImageUrl(activeConversation.itemImage || activeItem?.item_image) ? (
-                <img
-                  src={normalizeImageUrl(activeConversation.itemImage || activeItem?.item_image)}
-                  alt=""
-                  className="h-14 w-14 shrink-0 rounded-md object-cover sm:h-16 sm:w-16"
-                />
-              ) : (
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md bg-[var(--surface-strong)] text-[var(--text-soft)] sm:h-16 sm:w-16">
-                  <Package className="h-5 w-5" />
-                </div>
-              )}
+              <ChatProductImage key={`${destination}:${activeConversation.itemId || ''}`}
+                conversationImage={activeConversation.itemImage} productImage={activeItem?.item_image} />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-bold text-[var(--text)]">
                   {activeConversation.itemTitle || activeItem?.item_title || '未关联商品'}
@@ -990,6 +968,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
                     </div>
                   )}
                 </div>
+                <ConversationAiSwitch enabled={replyControl.state?.enabled ?? null}
+                  busy={replyControl.busy || sending}
+                  unavailable={replyControl.unavailable || Boolean(activeHandoff && activeHandoff.revision > (replyControl.state?.revision ?? 0))}
+                  onToggle={() => void handleToggleReply()} />
               </div>
               {showImagePicker && <div className="mb-3"><ReplyImagePicker key={destination} ids={draftImages} onChange={setDraftImages} disabled={sending} onBusy={setImageUploading} /></div>}
               <div className="flex items-end gap-2 sm:gap-3">

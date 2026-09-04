@@ -49,25 +49,21 @@ class ItemListTransientError(Exception):
 
 
 class AutoReplyPauseManager:
-    """自动回复暂停管理器（人工接入后暂停该会话的自动回复）。
-
-    键必须是 (cookie_id, chat_id) 而不是单独的 chat_id。这是个全局单例，
-    所有账号共用；chat_id 标识的是一个会话，当用户自己的两个账号正好是同一个
-    会话的两端时（测试自动回复时最常见的做法），两边拿到的是同一个 chat_id。
-    于是 A 账号手动发一条消息，就会把 B 账号对这个会话的自动回复一起停掉，
-    表现为「关键词明明配好了却不回」，而唯一线索只有一行 info 日志。
-    """
+    """Compatibility facade over durable, account/conversation-isolated manual control."""
     def __init__(self):
-        # {(cookie_id, chat_id): pause_until_timestamp}
+        # Storage failures remain fail-closed in this process, never expire on a timer.
         self.paused_chats = {}
         self.confirmed_reply_echoes = {}
 
     @staticmethod
     def _key(cookie_id: str, chat_id: str):
-        return (str(cookie_id), str(chat_id))
+        return (str(cookie_id), str(chat_id).split('@', 1)[0])
 
     def pause_chat(self, chat_id: str, cookie_id: str, *, message_id=None, message_ms=None):
-        """暂停指定账号下该 chat_id 的自动回复，使用账号特定的暂停时间"""
+        """人工接入后关闭该会话，只有显式打开开关才能恢复。"""
+        from app.services.outgoing_echoes import outgoing_echoes
+        if outgoing_echoes.contains(cookie_id, chat_id, message_id):
+            return
         echo_key = (*self._key(cookie_id, chat_id), str(message_id))
         if message_id and self.confirmed_reply_echoes.get(echo_key, 0) > time.time():
             return
@@ -79,48 +75,47 @@ class AutoReplyPauseManager:
                     return
             except Exception:
                 logger.warning("无法核对历史发出消息的恢复时间，保留原人工暂停保护")
-        # 获取账号特定的暂停时间
         try:
             from app.db_manager import db_manager
-            pause_minutes = db_manager.get_cookie_pause_duration(cookie_id)
-        except Exception as e:
-            logger.error(f"获取账号 {cookie_id} 暂停时间失败: {e}，使用默认10分钟")
-            pause_minutes = 10
-
-        # 如果暂停时间为0，表示不暂停
-        if pause_minutes == 0:
-            logger.info(f"【{cookie_id}】检测到手动发出消息，但暂停时间设置为0，不暂停自动回复")
-            return
-
-        pause_duration_seconds = pause_minutes * 60
-        pause_until = time.time() + pause_duration_seconds
-        self.paused_chats[self._key(cookie_id, chat_id)] = pause_until
-
-        # 计算暂停结束时间
-        end_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(pause_until))
-        logger.info(f"【{cookie_id}】检测到手动发出消息，chat_id {chat_id} 自动回复暂停{pause_minutes}分钟，恢复时间: {end_time}")
+            from app.services.human_handoff import HumanHandoffs
+            service = HumanHandoffs(db_manager)
+            with db_manager.lock:
+                owner = service.owner(cookie_id)
+                service.pause_manual(owner, cookie_id, chat_id, message_ms=message_ms)
+        except Exception:
+            self.paused_chats[self._key(cookie_id, chat_id)] = True
+            logger.error(f"【{cookie_id}】人工暂停保存失败，本会话保持关闭，请检查本地存储")
 
     def is_chat_paused(self, chat_id: str, cookie_id: str) -> bool:
         """检查指定账号下该 chat_id 是否处于暂停状态"""
+        from app.services.outgoing_echoes import outgoing_echoes
+        if outgoing_echoes.unresolved(cookie_id, chat_id):
+            return True
         key = self._key(cookie_id, chat_id)
-        pause_until = self.paused_chats.get(key)
-        if pause_until is None:
-            return False
-
-        if time.time() >= pause_until:
-            # 暂停时间已过，移除记录
-            self.paused_chats.pop(key, None)
-            return False
-
-        return True
+        if key in self.paused_chats:
+            return True
+        try:
+            from app.db_manager import db_manager
+            from app.services.human_handoff import HumanHandoffs
+            service = HumanHandoffs(db_manager)
+            with db_manager.lock:
+                return not service.control(service.owner(cookie_id), cookie_id, chat_id)['enabled']
+        except Exception:
+            return True
 
     def get_remaining_pause_time(self, chat_id: str, cookie_id: str) -> int:
-        """获取指定账号下该 chat_id 的剩余暂停时间（秒）"""
-        pause_until = self.paused_chats.get(self._key(cookie_id, chat_id))
-        if pause_until is None:
-            return 0
+        """Legacy compatibility; persistent manual mode has no countdown."""
+        return 0
 
-        return max(0, int(pause_until - time.time()))
+    async def observe_self_message(self, chat_id, cookie_id, *, message_id=None, message_ms=None):
+        from app.services.outgoing_echoes import outgoing_echoes
+        own_send = False
+        try:
+            own_send = await outgoing_echoes.match_self_push(cookie_id, chat_id, message_id)
+        finally:
+            # Unknown/failed receipt or cancelled observation is manual, never an implicit reopen.
+            if not own_send:
+                self.pause_chat(chat_id, cookie_id, message_id=message_id, message_ms=message_ms)
 
     def resume_chat(self, chat_id: str, cookie_id: str, confirmed_message_ids=()):
         key = self._key(cookie_id, str(chat_id).split('@', 1)[0])
@@ -134,13 +129,9 @@ class AutoReplyPauseManager:
             self.confirmed_reply_echoes.pop(next(iter(self.confirmed_reply_echoes)))
 
     def cleanup_expired_pauses(self):
-        """清理已过期的暂停记录"""
-        current_time = time.time()
-        expired = [key for key, pause_until in self.paused_chats.items()
-                   if current_time >= pause_until]
-
-        for key in expired:
-            self.paused_chats.pop(key, None)
+        """Only correlation caches expire. Manual state is never released here."""
+        now = time.time()
+        self.confirmed_reply_echoes = {k: expiry for k, expiry in self.confirmed_reply_echoes.items() if expiry > now}
 
 
 # 全局暂停管理器实例
@@ -6955,10 +6946,16 @@ class XianyuLive:
         }
         if wait_for_ack:
             return await self._send_delivery_request(ws, msg)
+        from app.services.automatic_reply_guard import check_reply_send
+        from app.services.outgoing_echoes import outgoing_echoes
+        check_reply_send(self.cookie_id, cid)
+        outgoing_echoes.register(self.cookie_id, msg['headers']['mid'], cid)
         await ws.send(json.dumps(msg))
 
     def _resolve_im_response(self, message_data):
         """Resolve a pending IM request when the server echoes its mid."""
+        from app.services.outgoing_echoes import outgoing_echoes
+        outgoing_echoes.resolve(self.cookie_id, message_data)
         if not isinstance(message_data, dict):
             return False
         headers = message_data.get("headers")
@@ -7006,11 +7003,15 @@ class XianyuLive:
             if lwp == SEND_PATH:
                 record_im(self.cookie_id, mid, 'started')
             try:
-                await asyncio.wait_for(websocket.send(json.dumps({
-                    "lwp": lwp,
-                    "headers": {"mid": mid},
-                    "body": body,
-                })), timeout=timeout)
+                async def write_request():
+                    if lwp == SEND_PATH:
+                        from app.services.automatic_reply_guard import check_reply_send
+                        from app.services.outgoing_echoes import outgoing_echoes
+                        cid = body[0]['cid']
+                        check_reply_send(self.cookie_id, cid)
+                        outgoing_echoes.register(self.cookie_id, mid, cid)
+                    await websocket.send(json.dumps({"lwp": lwp, "headers": {"mid": mid}, "body": body}))
+                await asyncio.wait_for(write_request(), timeout=timeout)
             except (Exception, asyncio.CancelledError) as exc:
                 self._im_pending.pop(mid, None)
                 if lwp == SEND_PATH:
@@ -9715,6 +9716,8 @@ class XianyuLive:
             msg_time: 消息时间
         """
         log_id = None
+        from app.services.automatic_reply_guard import set_reply_guard, reset_reply_guard
+        reply_guard_token = None
         reply_send_failed = False
         log_context = {
             "chat_id": chat_id,
@@ -9757,11 +9760,12 @@ class XianyuLive:
                 logger.info(f"[{msg_time}] 【{self.cookie_id}】【系统】自动回复已禁用")
                 return
 
+            # An early self-push can precede its send receipt. Wait for exact-ID attribution,
+            # without losing a new buyer message or blocking another conversation.
+            from app.services.outgoing_echoes import outgoing_echoes
+            await outgoing_echoes.wait_settled(self.cookie_id, chat_id)
             # 检查该chat_id是否处于暂停状态
             if pause_manager.is_chat_paused(chat_id, self.cookie_id):
-                remaining_time = pause_manager.get_remaining_pause_time(chat_id, self.cookie_id)
-                remaining_minutes = remaining_time // 60
-                remaining_seconds = remaining_time % 60
                 self._add_reply_decision_log(
                     message_data,
                     **log_context,
@@ -9770,7 +9774,7 @@ class XianyuLive:
                     reply_strategy="none",
                     send_status="unknown",
                 )
-                logger.info(f"[{msg_time}] 【{self.cookie_id}】【系统】chat_id {chat_id} 自动回复已暂停，剩余时间: {remaining_minutes}分{remaining_seconds}秒")
+                logger.info(f"[{msg_time}] 【{self.cookie_id}】【系统】chat_id {chat_id} 自动回复已关闭，等待手动开启")
                 return
 
             # 构造用户URL
@@ -9790,11 +9794,14 @@ class XianyuLive:
 
             def base_send_allowed():
                 return (AUTO_REPLY.get('enabled', True)
-                        and not pause_manager.is_chat_paused(chat_id, self.cookie_id)
                         and not db_manager.matches_message_filter(self.cookie_id, send_message, 'skip_reply'))
 
             def current_reply_allowed():
-                return base_send_allowed() and handoffs.can_reply(owner, self.cookie_id, chat_id, revision, message_ms)
+                return (base_send_allowed() and not pause_manager.is_chat_paused(chat_id, self.cookie_id)
+                        and handoffs.can_reply(owner, self.cookie_id, chat_id, revision, message_ms))
+
+            wire_check = current_reply_allowed
+            reply_guard_token = set_reply_guard(self.cookie_id, chat_id, lambda: wire_check())
 
             async def transfer_to_human(reason, check):
                 # A local QA/target error must never bypass the account's AI switch.
@@ -9849,6 +9856,7 @@ class XianyuLive:
                     if decision.semantic and not db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled'):
                         return False
                     return bool(decision.snapshot) and fixed.revalidate(decision, self.cookie_id, item_id)
+                wire_check = fixed_send_allowed
                 rule = decision.rule or {}
                 text = rule.get('content', '') if decision.status == 'matched' else CLARIFY_REPLY
                 images = rule.get('image_ids', []) if decision.status == 'matched' else []
@@ -9869,6 +9877,8 @@ class XianyuLive:
                 return (current_reply_allowed()
                         and fixed.revalidate(decision, self.cookie_id, item_id)
                         and (not decision.semantic or db_manager.get_ai_reply_settings(self.cookie_id).get('ai_enabled')))
+
+            wire_check = fallback_send_allowed
 
             reply = None
             reply_strategy = "none"
@@ -10150,6 +10160,9 @@ class XianyuLive:
                     send_status="failed",
                 )
             logger.error(f"处理聊天消息回复时发生错误: {self._safe_str(e)}")
+        finally:
+            if reply_guard_token is not None:
+                reset_reply_guard(reply_guard_token)
 
     async def handle_message(self, message_data, websocket):
         """处理所有类型的消息"""
@@ -10431,11 +10444,14 @@ class XianyuLive:
 
             # 判断消息方向
             if send_user_id == self.myid:
+                if self._is_system_or_order_event(send_message):
+                    # A platform "你已发货" card is not a human taking over this chat.
+                    return
                 logger.info(f"[{msg_time}] 【手动发出】 商品({item_id}): {send_message}")
 
-                # 暂停该chat_id的自动回复10分钟
-                pause_manager.pause_chat(chat_id, self.cookie_id,
-                                         message_id=self._extract_message_id(message), message_ms=create_time)
+                # 持久关闭本账号的这一会话，不再按分钟自动恢复。
+                await pause_manager.observe_self_message(chat_id, self.cookie_id,
+                                                         message_id=self._extract_message_id(message), message_ms=create_time)
 
                 return
             else:
@@ -11790,6 +11806,10 @@ class XianyuLive:
 
             if wait_for_ack:
                 return await self._send_delivery_request(ws, msg)
+            from app.services.automatic_reply_guard import check_reply_send
+            from app.services.outgoing_echoes import outgoing_echoes
+            check_reply_send(self.cookie_id, cid)
+            outgoing_echoes.register(self.cookie_id, msg['headers']['mid'], cid)
             await ws.send(json.dumps(msg))
             logger.info(f"【{self.cookie_id}】图片消息发送成功: {image_url}")
 

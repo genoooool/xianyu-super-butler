@@ -109,11 +109,23 @@ def main():
             assert session.get(base+'/chat/handoffs').json()['entries']==[]
             assert db.execute("SELECT ai_enabled FROM ai_reply_settings WHERE cookie_id='offline-handoff'").fetchone()[0]==0
             assert db.execute("SELECT pending,revision FROM chat_human_handoffs").fetchone()==(0,2)
+            control=base+'/chat/handoffs/offline-handoff/offline-chat'
+            assert session.get(control).json()['enabled'] is True
+            off=session.put(control,json=dict(enabled=False,revision=2)); off.raise_for_status()
+            assert off.json()['enabled'] is False and off.json()['revision']==3
+            assert session.get(base+'/chat/handoffs').json()['entries']==[]  # Manual OFF is not an AI attention item.
+            assert session.get(base+'/chat/handoffs/offline-handoff/another-chat').json()['enabled'] is True
+            assert session.get(base+'/chat/handoffs/not-owned/offline-chat').status_code==404
+            assert session.put(control,json=dict(enabled=True,revision=2)).status_code==409
+            assert session.put(control,json=dict(enabled='false',revision=3)).status_code==422
+            on=session.put(control,json=dict(enabled=True,revision=3)); on.raise_for_status()
+            assert on.json()['enabled'] is True and on.json()['revision']==4
+            assert db.execute("SELECT ai_enabled FROM ai_reply_settings WHERE cookie_id='offline-handoff'").fetchone()[0]==0
             assert db.execute('PRAGMA quick_check').fetchone()[0]=='ok'
             db.close()
             report=dict(status='passed',ready_seconds=ready,packaged_qa_image=True,phrase_image=True,backup_roundtrip=True,
                         private_asset_guard=True,handoff_resume=True,multiselect_crud=True,offline_send_keeps_handoff=True,
-                        ai_enablement_unchanged=True,buyer_messages_sent=0)
+                        ai_enablement_unchanged=True,conversation_switch_scope_cas=True,buyer_messages_sent=0)
             (args.output_dir/'result.json').write_text(json.dumps(report,indent=2)+'\n')
             print(json.dumps(report),flush=True)
         finally:

@@ -1,4 +1,4 @@
-"""Offline workbench reply receipts, takeover revision races and delayed self echoes."""
+"""Manual replies keep control off; explicit switches own restoration and echo watermarks."""
 import ast
 import asyncio
 import io
@@ -55,27 +55,27 @@ class Fixture(unittest.TestCase):
         return asyncio.run(send_manual_reply(**data))
 
 
-class ManualResumeTests(Fixture):
-    def test_observed_top_level_200_receipt_resumes_pending(self):
+class ManualControlTests(Fixture):
+    def test_observed_top_level_200_receipt_keeps_manual_control(self):
         self.begin()
         self.instance.send_im_text.return_value = {'code': 200, 'headers': {'mid': '12345 0'},
                                                    'body': {'messageId': 'manual-1.PNM'}}
-        self.assertEqual(self.send()['handoff_auto_resume'], 'resumed')
-        self.clear.assert_called_once_with('chat', 'a', ['manual-1.PNM'])
+        self.assertEqual(self.send()['handoff_auto_resume'], 'disabled')
+        self.clear.assert_not_called()
+        self.assertFalse(self.service.control(1, 'a', 'chat')['enabled'])
 
-    def test_confirmed_text_resumes_only_target_and_rejects_old_work(self):
+    def test_confirmed_text_keeps_only_target_off_and_rejects_old_work(self):
         self.begin(); self.begin(cookie='b'); self.begin(chat='another')
         result = self.send(cid='chat@goofish', toid='buyer@goofish')
-        self.assertEqual(result['handoff_auto_resume'], 'resumed')
-        self.assertEqual(result['handoff_resumed_revision'], 1)
-        self.clear.assert_called_once_with('chat', 'a', ['manual-1'])
+        self.assertEqual(result['handoff_auto_resume'], 'disabled')
+        self.clear.assert_not_called()
         self.instance.send_im_text.assert_awaited_once_with('chat', 'buyer', '人工回复')
         state = self.service.state(1, 'a', 'chat')
-        self.assertFalse(state['pending'])
+        self.assertTrue(state['pending'])
         self.assertEqual({(v['cookie_id'], v['chat_id']) for v in self.service.pending(1)}, {('b', 'chat'), ('a', 'another')})
         self.assertFalse(self.service.can_reply(1, 'a', 'chat', 1, state['resumed_ms'] + 1))
         self.assertFalse(self.service.can_reply(1, 'a', 'chat', 2, state['resumed_ms']))
-        self.assertTrue(self.service.can_reply(1, 'a', 'chat', 2, state['resumed_ms'] + 1))
+        self.assertFalse(self.service.can_reply(1, 'a', 'chat', 2, state['resumed_ms'] + 1))
 
     def test_images_wait_until_every_part_has_confirmed(self):
         self.begin()
@@ -87,13 +87,14 @@ class ManualResumeTests(Fixture):
         result = self.send(images=[self.image])
         self.assertEqual(result['parts'], 2)
         self.assertEqual(result['messageId'], 'image-1')
-        self.clear.assert_called_once_with('chat', 'a', ['manual-1', 'image-1'])
+        self.clear.assert_not_called()
+        self.assertFalse(self.service.control(1, 'a', 'chat')['enabled'])
 
-    def test_image_only_reply_also_resumes(self):
+    def test_image_only_reply_also_keeps_manual_control(self):
         self.begin()
         result = self.send(text='', images=[self.image])
         self.assertEqual(result['parts'], 1)
-        self.assertEqual(result['handoff_auto_resume'], 'resumed')
+        self.assertEqual(result['handoff_auto_resume'], 'disabled')
         self.instance.send_im_text.assert_not_called()
 
     def test_partial_image_failure_retains_takeover_and_never_retries(self):
@@ -127,11 +128,12 @@ class ManualResumeTests(Fixture):
             self.assertTrue(self.service.state(1, 'a', 'chat')['pending'])
         self.clear.assert_not_called()
 
-    def test_normal_reply_does_not_change_other_pause_or_create_handoff(self):
+    def test_normal_reply_closes_only_target_without_creating_ai_attention(self):
         self.begin(chat='another')
         result = self.send()
-        self.assertEqual(result['handoff_auto_resume'], 'not_pending')
-        self.assertIsNone(self.service.state(1, 'a', 'chat'))
+        self.assertEqual(result['handoff_auto_resume'], 'disabled')
+        self.assertFalse(self.service.control(1, 'a', 'chat')['enabled'])
+        self.assertEqual([entry['chat_id'] for entry in self.service.pending(1)], ['another'])
         self.clear.assert_not_called()
 
     def test_handoff_created_during_normal_send_is_not_cleared(self):
@@ -139,27 +141,39 @@ class ManualResumeTests(Fixture):
             self.begin()
             return receipt()
         self.instance.send_im_text.side_effect = send
-        self.assertEqual(self.send()['handoff_auto_resume'], 'not_pending')
+        self.assertEqual(self.send()['handoff_auto_resume'], 'disabled')
         self.assertTrue(self.service.state(1, 'a', 'chat')['pending'])
         self.clear.assert_not_called()
 
     def test_new_revision_during_send_is_not_cleared(self):
         self.begin()
         async def send(*args):
-            self.service.resume(1, 'a', 'chat', 1)
+            revision = self.service.state(1, 'a', 'chat')['revision']
+            self.service.resume(1, 'a', 'chat', revision)
             state = self.service.state(1, 'a', 'chat')
-            self.begin(revision=2, stamp=state['resumed_ms'] + 1)
+            self.begin(revision=state['revision'], stamp=state['resumed_ms'] + 1)
             return receipt()
         self.instance.send_im_text.side_effect = send
-        self.assertEqual(self.send()['handoff_auto_resume'], 'changed')
+        self.assertEqual(self.send()['handoff_auto_resume'], 'disabled')
         state = self.service.state(1, 'a', 'chat')
-        self.assertTrue(state['pending']); self.assertEqual(state['revision'], 3)
+        self.assertTrue(state['pending']); self.assertEqual(state['revision'], 4)
         self.clear.assert_not_called()
 
     def test_wrong_buyer_does_not_release_pending_conversation(self):
         self.begin()
-        self.assertEqual(self.send(toid='another-buyer')['handoff_auto_resume'], 'changed')
+        self.assertEqual(self.send(toid='another-buyer')['handoff_auto_resume'], 'disabled')
         self.assertTrue(self.service.state(1, 'a', 'chat')['pending'])
+        self.clear.assert_not_called()
+
+    def test_user_switching_on_while_manual_send_awaits_ack_is_not_overwritten(self):
+        async def send(*args):
+            state = self.service.control(1, 'a', 'chat')
+            self.assertFalse(state['enabled'])
+            self.service.set_enabled(1, 'a', 'chat', True, state['revision'])
+            return receipt()
+        self.instance.send_im_text.side_effect = send
+        self.send()
+        self.assertTrue(self.service.control(1, 'a', 'chat')['enabled'])
         self.clear.assert_not_called()
 
     def test_foreign_owner_cannot_send(self):
@@ -168,15 +182,13 @@ class ManualResumeTests(Fixture):
         self.instance.send_im_text.assert_not_called()
         self.clear.assert_not_called()
 
-    def test_resume_storage_error_is_not_reported_as_send_failure(self):
+    def test_pause_storage_error_stops_before_any_send(self):
         self.begin()
-        with patch.object(HumanHandoffs, 'resume', side_effect=sqlite3.OperationalError('offline disk error')):
-            result = self.send()
-        self.assertEqual(result['parts'], 1)
-        self.assertEqual(result['handoff_auto_resume'], 'failed')
+        with patch.object(HumanHandoffs, 'pause_manual', side_effect=sqlite3.OperationalError('offline disk error')):
+            with self.assertRaises(sqlite3.OperationalError): self.send()
         self.assertTrue(self.service.state(1, 'a', 'chat')['pending'])
         self.clear.assert_not_called()
-        self.instance.send_im_text.assert_awaited_once()
+        self.instance.send_im_text.assert_not_called()
 
     def test_receipt_ids_are_never_fabricated_from_request_id(self):
         self.assertEqual(receipt_message_id({'headers': {'mid': 'request'}, 'body': {}}), '')
@@ -205,7 +217,10 @@ class EchoTests(Fixture):
         self.manager.pause_chat('chat', 'a', message_id='manual-1')
         self.manager.pause_chat('chat', 'b')
         self.manager.pause_chat('another', 'a')
-        self.send(clear_timed_pause=self.manager.resume_chat)
+        self.send()
+        state = self.service.state(1, 'a', 'chat')
+        self.service.set_enabled(1, 'a', 'chat', True, state['revision'])
+        self.manager.resume_chat('chat', 'a', ['manual-1'])
         self.manager.pause_chat('chat', 'a', message_id='manual-1', message_ms=int(time.time()*1000)+100000)
         self.assertFalse(self.manager.is_chat_paused('chat', 'a'))
         self.assertTrue(self.manager.is_chat_paused('chat', 'b'))
@@ -215,6 +230,8 @@ class EchoTests(Fixture):
 
     def test_persisted_watermark_ignores_old_echo_after_restart_but_not_new_mobile_reply(self):
         self.begin(); self.send()
+        state = self.service.state(1, 'a', 'chat')
+        self.service.set_enabled(1, 'a', 'chat', True, state['revision'])
         stamp = self.service.state(1, 'a', 'chat')['resumed_ms']
         restarted = self.manager_type()
         restarted.pause_chat('chat', 'a', message_ms=stamp)
@@ -224,10 +241,12 @@ class EchoTests(Fixture):
 
     def test_invalid_timestamp_or_new_pending_state_never_bypasses_pause(self):
         self.begin(); self.send()
+        state = self.service.state(1, 'a', 'chat')
+        self.service.set_enabled(1, 'a', 'chat', True, state['revision'])
         stamp = self.service.state(1, 'a', 'chat')['resumed_ms']
         for invalid in (None, '', float('nan'), float('inf'), -1, 0):
             self.assertFalse(outgoing_precedes_resume(self.db, 'a', 'chat', invalid))
-        self.begin(revision=2, stamp=stamp+1)
+        self.begin(revision=3, stamp=stamp+1)
         self.assertFalse(outgoing_precedes_resume(self.db, 'a', 'chat', stamp))
         self.manager.pause_chat('chat', 'a', message_ms=stamp)
         self.assertTrue(self.manager.is_chat_paused('chat', 'a'))
@@ -265,19 +284,19 @@ class ManualRouteTests(Fixture):
         return asyncio.run(self.route('a', SimpleNamespace(cid='chat', to_user_id='buyer',
             text=text, image_ids=images or []), {'user_id': owner, 'username': 'offline'}))
 
-    def test_actual_route_returns_auto_resume_metadata_for_text(self):
+    def test_actual_route_returns_disabled_auto_resume_metadata_for_text(self):
         self.begin()
         result = self.request()
         self.assertTrue(result['success'])
-        self.assertEqual(result['data']['handoff_auto_resume'], 'resumed')
-        self.assertEqual(result['data']['handoff_resumed_revision'], 1)
+        self.assertEqual(result['data']['handoff_auto_resume'], 'disabled')
+        self.assertNotIn('handoff_resumed_revision', result['data'])
         self.runner.assert_awaited_once()
 
     def test_actual_route_returns_metadata_for_image_only(self):
         self.begin()
         result = self.request(text='', images=[self.image])
         self.assertTrue(result['success'])
-        self.assertEqual(result['data']['handoff_auto_resume'], 'resumed')
+        self.assertEqual(result['data']['handoff_auto_resume'], 'disabled')
         self.instance.send_im_text.assert_not_called()
 
     def test_actual_route_retains_auth_and_validation_before_sending(self):

@@ -5,6 +5,7 @@ import time
 
 HANDOFF_REPLY = "请稍等，我马上召唤人工客服。耐心等待一下哦亲。"
 HANDOFF_MARKER = "__HUMAN_HANDOFF__"
+MANUAL_REASONS = {'manual_switch', 'manual_reply'}
 
 
 class HandoffReply(str):
@@ -89,6 +90,54 @@ class HumanHandoffs:
         return (not state['pending'] and state['revision'] == revision
                 and message_ms > state['resumed_ms'])
 
+    def control(self, owner_id, cookie_id, chat_id):
+        state = self.state(owner_id, cookie_id, chat_id)
+        return {
+            'cookie_id': cookie_id, 'chat_id': chat_key(chat_id),
+            'enabled': not bool(state and state['pending']),
+            'revision': state['revision'] if state else 0,
+            'reason': state['reason'] if state and state['pending'] else '',
+        }
+
+    def set_enabled(self, owner_id, cookie_id, chat_id, enabled, revision, *,
+                    reason='manual_switch', buyer_id='', buyer_name='', item_id=''):
+        """One owner-scoped compare-and-set; no timer, platform call or account setting change."""
+        if type(enabled) is not bool or type(revision) is not int or revision < 0:
+            raise ValueError('无效的会话开关状态')
+        with self.db.lock, self.db.conn:
+            state = self.state(owner_id, cookie_id, chat_id)
+            if (state['revision'] if state else 0) != revision:
+                raise ValueError('会话状态已改变，请刷新后再操作')
+            now = int(self.clock() * 1000)
+            # Each explicit change invalidates work queued before this decision,
+            # including an off/on round trip and a repeated request from another window.
+            self.db.conn.execute('''INSERT INTO chat_human_handoffs
+                (owner_id,cookie_id,chat_id,revision,pending,reason,buyer_id,buyer_name,item_id,
+                 created_ms,resumed_ms,send_status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,'withheld')
+                ON CONFLICT(owner_id,cookie_id,chat_id) DO UPDATE SET
+                revision=excluded.revision,pending=excluded.pending,reason=excluded.reason,
+                buyer_id=excluded.buyer_id,buyer_name=excluded.buyer_name,item_id=excluded.item_id,
+                created_ms=excluded.created_ms,resumed_ms=excluded.resumed_ms,send_status='withheld'
+                ''', (owner_id, cookie_id, chat_key(chat_id), revision + 1, int(not enabled),
+                      '' if enabled else reason, str(buyer_id or (state or {}).get('buyer_id', ''))[:128],
+                      str(buyer_name or (state or {}).get('buyer_name', ''))[:120],
+                      str(item_id or (state or {}).get('item_id', ''))[:128], now,
+                      now if enabled else (state or {}).get('resumed_ms', 0)))
+            return self.control(owner_id, cookie_id, chat_id)
+
+    def pause_manual(self, owner_id, cookie_id, chat_id, *, buyer_id='', buyer_name='', item_id='', message_ms=None):
+        with self.db.lock, self.db.conn:
+            state = self.state(owner_id, cookie_id, chat_id)
+            if state and not state['pending'] and message_ms is not None:
+                if not isinstance(message_ms, (int, float)) or not math.isfinite(message_ms) or message_ms <= state['resumed_ms']:
+                    return self.control(owner_id, cookie_id, chat_id)
+            if state and state['pending'] and state['reason'] in MANUAL_REASONS:
+                return self.control(owner_id, cookie_id, chat_id)
+            return self.set_enabled(owner_id, cookie_id, chat_id, False,
+                                    state['revision'] if state else 0, reason='manual_reply',
+                                    buyer_id=buyer_id, buyer_name=buyer_name, item_id=item_id)
+
     def begin(self, owner_id, cookie_id, chat_id, revision, message_ms, reason, buyer_id, buyer_name, item_id):
         """Claim once BEFORE sending. A crash/timeout cannot permit replay or more AI replies."""
         with self.db.lock, self.db.conn:
@@ -126,7 +175,8 @@ class HumanHandoffs:
         with self.db.lock:
             cursor = self.db.conn.execute('''SELECT h.* FROM chat_human_handoffs h
                 JOIN cookies c ON c.id=h.cookie_id AND c.user_id=h.owner_id
-                WHERE h.owner_id=? AND h.pending=1 ORDER BY h.created_ms DESC''', (owner_id,))
+                WHERE h.owner_id=? AND h.pending=1 AND h.reason NOT IN ('manual_switch','manual_reply')
+                ORDER BY h.created_ms DESC''', (owner_id,))
             return [dict(zip([c[0] for c in cursor.description], row)) for row in cursor.fetchall()]
 
     def resume(self, owner_id, cookie_id, chat_id, revision):
@@ -163,7 +213,9 @@ async def request_handoff(instance, db, *, owner_id, chat_id, buyer_id, buyer_na
             service.finish_send(ticket, 'withheld')
             return service.state(owner_id, instance.cookie_id, chat_id)
         from app.services.reply_delivery import require_receipt
-        receipt = await instance.send_im_text(chat_id, buyer_id, HANDOFF_REPLY)
+        from app.services.automatic_reply_guard import reply_guard
+        with reply_guard(instance.cookie_id, chat_id, lambda: service.current(ticket) and check()):
+            receipt = await instance.send_im_text(chat_id, buyer_id, HANDOFF_REPLY)
         require_receipt(receipt)
         service.finish_send(ticket, 'confirmed')
     except asyncio.CancelledError:
