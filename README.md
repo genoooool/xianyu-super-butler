@@ -2,8 +2,8 @@
 
 面向闲鱼卖家的账号、商品、订单、消息、自动回复与自动发货一体化管理系统。
 
-[![GitHub Stars](https://img.shields.io/github/stars/23Star/xianyu-super-butler?style=flat&logo=github&color=f5b301)](https://github.com/23Star/xianyu-super-butler/stargazers)
-[![Version](https://img.shields.io/badge/Version-3.1.0-52c41a)](https://github.com/23Star/xianyu-super-butler/releases)
+[![GitHub Stars](https://img.shields.io/github/stars/genoooool/xianyu-super-butler?style=flat&logo=github&color=f5b301)](https://github.com/genoooool/xianyu-super-butler/stargazers)
+[![Desktop Version](https://img.shields.io/badge/Desktop-1.0.2-52c41a)](https://github.com/genoooool/xianyu-super-butler/releases/latest)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)](https://react.dev/)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-222222)](LICENSE)
@@ -13,6 +13,26 @@
 多账号统一托管，买家下单自动发卡密、自动确认收货、自动评价、自动求小红花、收货后自动致谢。
 关键词和 AI 双层自动回复接住每一句咨询，商品与订单自动同步，滑块与人机验证自动处理。
 从「盯着手机一个个回」变成「打开网页看数据」。
+
+## 本仓库相对原系统的改动
+
+本仓库是 [23Star/xianyu-super-butler](https://github.com/23Star/xianyu-super-butler) 的桌面增强分支，
+保留原系统的网页端、多账号、订单、回复和发货能力。以下功能由本仓库新增或继续加固：
+
+| 方向 | 本仓库新增或调整的能力 |
+| --- | --- |
+| 原生桌面版 | 提供 macOS Apple Silicon 和 Windows x64 安装包，内置后端与 Chromium，业务数据保存在当前用户的本地应用目录 |
+| 消息中心 | 默认聚合所有在线店铺会话，以“店铺 + 会话”锁定目标；补全旧会话昵称，并防止同会话 ID 跨店串线 |
+| 系统通知 | 新消息可显示本机系统提醒，点击后回到对应店铺和会话；支持提示音、通知开关和退出后进程清理 |
+| 回复控制 | 增加店铺客服总开关、单会话 AI 开关、持久人工接管；人工回复确认成功后按版本安全恢复 |
+| AI 知识与固定 QA | 支持店铺/商品/共用知识、TXT/Markdown 文档、固定原文与私有图片、多商品 QA；资料不足时转人工 |
+| 发送与发货安全 | 显示真实发送状态，只有明确失败才允许确认重发；发卡和确认发货必须取得对应平台成功回执 |
+| 商品与订单 | 增加账号筛选、商品搜索、买卖账号隔离、订单状态防倒退、退款同步和买家昵称修正 |
+| 本机安全与更新 | 登录信息只存 macOS Keychain 或 Windows Credential Manager；macOS 支持签名的应用内更新，Windows 提供独立安装包 |
+
+桌面版请从本仓库的 [Releases](https://github.com/genoooool/xianyu-super-butler/releases/latest) 下载。
+Windows 安装包目前没有 Authenticode 签名，首次运行可能出现“未知发布者”提示。下文引用的
+`ghcr.io/23star/xianyu-super-butler` 是上游 Docker 镜像，不包含本分支的桌面增强改动。
 
 - 🏪 **多账号管理** — 扫码即接入，一个后台管完所有小号，逐账号独立配置策略
 - 📦 **自动发货** — 卡密自动发出，支持多规格、多数量，发货前风险拦截
@@ -105,7 +125,7 @@ Windows PowerShell 把 `$(pwd)` 换成 `${PWD}`，续行的 `\` 换成反引号 
 ### Docker Compose（推荐长期使用）
 
 ```bash
-git clone https://github.com/23Star/xianyu-super-butler.git
+git clone https://github.com/genoooool/xianyu-super-butler.git
 cd xianyu-super-butler
 docker compose -f docker-compose.nas.yml up -d
 ```
@@ -150,7 +170,7 @@ docker compose -f docker-compose-cn.yml up -d --build
 需要 Python 3.11+、Node.js 20+、npm。
 
 ```bash
-git clone https://github.com/23Star/xianyu-super-butler.git
+git clone https://github.com/genoooool/xianyu-super-butler.git
 cd xianyu-super-butler
 
 py -3.11 -m venv .venv
@@ -202,7 +222,7 @@ git pull && docker compose up -d --build
   </tr>
 </table>
 
-缺陷和功能建议请提交到 [GitHub Issues](https://github.com/23Star/xianyu-super-butler/issues)。
+本分支的缺陷和功能建议请提交到 [GitHub Issues](https://github.com/genoooool/xianyu-super-butler/issues)。
 
 ## 许可与声明
 
