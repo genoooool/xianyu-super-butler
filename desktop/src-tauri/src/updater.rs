@@ -283,21 +283,25 @@ mod tests {
         assert!(root.join("installed/闲鱼工作台.app/Contents/Resources/update-contract.json").is_file());
         let new_binary = std::fs::read(&executable).unwrap();
         let mut policy = update.clone();
-        policy.version = "1.0.1".into();
+        let local = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let newer = semver::Version::new(local.major, local.minor, local.patch.saturating_add(1)).to_string();
+        policy.version = newer.clone();
         policy.raw_json["data_compatibility"] = json!(1);
-        policy.download_url = "https://github.com/genoooool/xianyu-super-butler/releases/download/v1.0.1/app.app.tar.gz".parse().unwrap();
+        policy.download_url = format!("https://github.com/genoooool/xianyu-super-butler/releases/download/v{newer}/app.app.tar.gz").parse().unwrap();
         assert!(validate_release(&policy).is_ok());
-        for wrong in ["0.9.9", "1.0.0", "1.0.1-beta.1", "not-a-version"] {
+        for wrong in [env!("CARGO_PKG_VERSION"), "0.9.9", "1.0.1-beta.1", "not-a-version"] {
             policy.version = wrong.into(); assert!(validate_release(&policy).is_err());
         }
-        policy.version = "1.0.1".into();
+        policy.version = newer.clone();
         policy.raw_json["data_compatibility"] = json!(2);
         assert!(validate_release(&policy).is_err());
         policy.raw_json["data_compatibility"] = json!(1);
-        for wrong in ["http://github.com/genoooool/xianyu-super-butler/releases/download/v1.0.1/app.app.tar.gz",
-            "https://github.com/23Star/xianyu-super-butler/releases/download/v1.0.1/app.app.tar.gz",
-            "https://example.com/app.app.tar.gz",
-            "https://github.com/genoooool/xianyu-super-butler/releases/download/v1.0.1/app.app.tar.gz?redirect=other"] {
+        for wrong in [
+            format!("http://github.com/genoooool/xianyu-super-butler/releases/download/v{newer}/app.app.tar.gz"),
+            format!("https://github.com/23Star/xianyu-super-butler/releases/download/v{newer}/app.app.tar.gz"),
+            "https://example.com/app.app.tar.gz".into(),
+            format!("https://github.com/genoooool/xianyu-super-butler/releases/download/v{newer}/app.app.tar.gz?redirect=other"),
+        ] {
             policy.download_url = wrong.parse().unwrap(); assert!(validate_release(&policy).is_err());
         }
         let mut bad = update;
