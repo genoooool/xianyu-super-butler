@@ -2282,17 +2282,20 @@ class XianyuLive:
 
     async def _enable_platform_keep_login(self):
         if silent_mode(self.cookies) in {'long_login', 'backup'}:
-            return
+            return True
         if time.time() - self.last_keep_login_attempt < 3600:
-            return
+            return True
         self.last_keep_login_attempt = time.time()
         expected = self.cookies_str
         async with PlatformSession(expected, self.device_id) as session:
             result = await session.enable_keep_login()
         if result.status in {'success', 'missing_long_token'}:
-            if await self._save_refreshed_cookies(expected, result.cookies):
-                self.current_token = result.token
+            if not await self._save_refreshed_cookies(expected, result.cookies):
+                self.last_token_refresh_status = 'superseded'
+                return False
+            self.current_token = result.token
         logger.info(f"【{self.cookie_id}】保存闲鱼长期登录信息: {result.status}")
+        return True
 
     async def _renew_platform_login(self):
         expected = self.cookies_str
@@ -2535,7 +2538,8 @@ class XianyuLive:
                                 self.needs_relogin = False
                                 self.relogin_reason = ''
                                 risk_control.registry.get(self.cookie_id).reset()
-                                await self._enable_platform_keep_login()
+                                if not await self._enable_platform_keep_login():
+                                    return None
                                 return self.current_token
 
                     # 检查是否需要滑块验证

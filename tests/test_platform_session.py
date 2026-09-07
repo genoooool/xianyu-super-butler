@@ -238,13 +238,13 @@ class RenewalIntegrationTests(unittest.IsolatedAsyncioTestCase):
         subject.ws.close.assert_awaited_once()
         self.assertTrue(subject.connection_restart_flag)
 
-    async def run_expired_flow(self, renewal_status):
+    async def run_expired_flow(self, renewal_status, *, response_payload=None, keep_saved=True):
         import sys
         from contextlib import asynccontextmanager
         @asynccontextmanager
         async def context(value):
             yield value
-        response = SimpleNamespace(status=200, headers={}, json=AsyncMock(return_value={'ret': ['FAIL_SYS_SESSION_EXPIRED']}))
+        response = SimpleNamespace(status=200, headers={}, json=AsyncMock(return_value=response_payload or {'ret': ['FAIL_SYS_SESSION_EXPIRED']}))
         post = Mock(return_value=context(response))
         client = SimpleNamespace(post=post)
         db = SimpleNamespace(get_cookie_details=Mock(return_value={'value': BASE, 'user_id': 7}))
@@ -270,14 +270,27 @@ class RenewalIntegrationTests(unittest.IsolatedAsyncioTestCase):
         subject.current_token = 'restored-token'
         subject._need_captcha_verification = Mock(return_value=False)
         subject._renew_platform_login = AsyncMock(return_value=renewal_status)
+        subject._enable_platform_keep_login = AsyncMock(return_value=keep_saved)
         subject._try_password_login_refresh = AsyncMock(return_value=False)
         subject.send_token_refresh_notification = AsyncMock()
         subject._safe_str = str
         with patch.dict(sys.modules, {'app.db_manager': SimpleNamespace(db_manager=db), 'utils.risk_control': risk}):
             result = await subject._refresh_token_impl()
         self.assertIn('cookie2=old-session', post.call_args.kwargs['headers']['cookie'])
-        subject._renew_platform_login.assert_awaited_once()
+        if response_payload is None:
+            subject._renew_platform_login.assert_awaited_once()
         return subject, result
+
+    async def test_late_keep_login_result_cannot_connect_with_superseded_token(self):
+        subject, token = await self.run_expired_flow('success', response_payload=SUCCESS, keep_saved=False)
+        self.assertIsNone(token)
+        subject._enable_platform_keep_login.assert_awaited_once()
+        subject._renew_platform_login.assert_not_awaited()
+
+    async def test_valid_existing_session_enables_keep_login_before_returning(self):
+        subject, token = await self.run_expired_flow('success', response_payload=SUCCESS)
+        self.assertEqual(token, 'fresh-access')
+        subject._enable_platform_keep_login.assert_awaited_once()
 
     async def test_real_session_expiry_tries_silent_recovery_before_password(self):
         subject, token = await self.run_expired_flow('success')
