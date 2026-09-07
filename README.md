@@ -1,12 +1,28 @@
-# 闲鱼智控（闲鱼超级管家）
+# 闲鱼工作台（Xianyu Workbench）｜多账号客服、AI 回复与自动发货
 
-面向闲鱼卖家的账号、商品、订单、消息、自动回复与自动发货一体化管理系统。
+闲鱼工作台（Xianyu Workbench）是面向闲鱼卖家的开源多账号管理工具，将消息接待、人工接管、AI 自动回复、商品、订单与卡密自动发货集中到本地桌面应用中。提供 macOS Apple Silicon 和 Windows x64 安装包，也保留源码与 Docker 部署方式。本仓库是独立维护的社区分支，并非闲鱼官方客户端；上游项目名称为“闲鱼智控 / 闲鱼超级管家”。
+
+Xianyu Workbench is an open-source desktop workspace for Xianyu sellers, with multi-account messaging, AI-assisted customer service, human handoff and digital-code delivery. Community maintained; not affiliated with Xianyu.
 
 [![GitHub Stars](https://img.shields.io/github/stars/genoooool/xianyu-super-butler?style=flat&logo=github&color=f5b301)](https://github.com/genoooool/xianyu-super-butler/stargazers)
-[![Desktop Version](https://img.shields.io/badge/Desktop-1.0.2-52c41a)](https://github.com/genoooool/xianyu-super-butler/releases/latest)
+[![Desktop Version](https://img.shields.io/badge/Desktop-1.0.3-52c41a)](https://github.com/genoooool/xianyu-super-butler/releases/latest)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)](https://react.dev/)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-222222)](LICENSE)
+
+**快速入口：** [下载最新桌面版](https://github.com/genoooool/xianyu-super-butler/releases/latest) · [常见问题](docs/faq.md) · [授权失效与续期](docs/desktop-login.md) · [部署说明](docs/deployment.md) · [版本记录](CHANGELOG.md) · [反馈问题](https://github.com/genoooool/xianyu-super-butler/issues)
+
+## 适合谁，怎么开始
+
+| 你的需求 | 使用方式与边界 |
+| --- | --- |
+| 在电脑接待多个闲鱼账号的咨询 | 下载桌面版，登录工作台后在账号管理中扫码接入自己的闲鱼账号；每条会话保留所属店铺 |
+| 用固定答案或 AI 减少重复回复 | 配置店铺/商品 QA 和知识资料；AI 需要另行配置兼容 OpenAI 协议的模型服务，调用费用由服务商决定 |
+| 人工处理议价、售后或复杂问题 | 使用店铺总开关和单会话人工接管；人工关闭后不会按计时器自动恢复 |
+| 给数字商品发卡密或文本资料 | 先配置库存与发货规则；发送和确认发货分别检查平台回执，未知结果需要人工核对 |
+| 在服务器或 NAS 上自行部署 | 使用本仓库源码构建；下文上游预构建 Docker 镜像不能等同于本分支版本 |
+
+**1.0.3 更新：** 修复桌面端连续运行24小时后的登录失效，增加闲鱼保持登录与已验证的静默续期。平台要求手机验证，或旧授权已失效且没有长期凭证时，仍需重新扫码。详见[授权说明](docs/desktop-login.md)。
 
 > [!IMPORTANT]
 > **桌面安装只是入口，核心改动是让多店客服、AI 回复和自动发货真正可控。**
@@ -15,15 +31,11 @@
 > - **AI 随时让人接管**：店铺总开关、单会话 AI 开关和持久人工接管分层控制；切换状态后，旧的生成结果不能延迟越权发送。
 > - **发送与发货以回执为准**：只有平台明确确认成功才显示已发送或已发货；超时和未知结果不会盲目重试，减少重复发卡和错误发货状态。
 > - **一套资料服务多个商品**：固定 QA、私有回复图片、店铺/商品/共用知识和多商品 QA 可以组合使用；缺少业务依据的报价或承诺会转人工。
-> - **本机提醒与凭据保护**：系统通知可回到对应店铺会话；登录信息进入 macOS Keychain 或 Windows Credential Manager。
+> - **本机提醒与凭据保护**：系统通知可回到对应店铺会话；选择记住的工作台登录账号和密码进入 macOS Keychain 或 Windows Credential Manager。闲鱼授权 Cookie 保存在本机应用数据库中。
 >
 > [查看完整差异](#本仓库相对原系统的改动) · [下载 macOS / Windows 桌面版](https://github.com/genoooool/xianyu-super-butler/releases/latest)
 
-**一个人，把几十个闲鱼账号做成一门自动运转的生意。**
-
-多账号统一托管，买家下单自动发卡密、自动确认收货、自动评价、自动求小红花、收货后自动致谢。
-关键词和 AI 双层自动回复接住每一句咨询，商品与订单自动同步，滑块与人机验证自动处理。
-从「盯着手机一个个回」变成「打开网页看数据」。
+集中处理多个账号的消息与订单，按实际业务配置回复、发货及买家互动规则。平台风控、账号验证和异常订单仍可能需要人工处理；项目不承诺无人值守、特定账号承载数量或零重复发货。
 
 ## 本仓库相对原系统的改动
 
@@ -39,7 +51,7 @@
 | 发卡与确认发货保护 | 自动发卡逐段检查平台成功回执，确认发货也必须取得对应成功结果；买卖账号和商品归属在动作前复核 | 降低重复发卡、发错店铺，以及消息未送达却被本地标成已发货的风险 |
 | 商品与订单一致性 | 增加账号筛选、商品搜索、买卖账号隔离、订单状态防倒退、退款同步和买家昵称修正 | 多账号数据更容易核对，迟到同步不会轻易把已完成或退款中的订单退回旧状态 |
 | 原生桌面与系统通知 | 提供 macOS Apple Silicon 和 Windows x64 安装包，内置后端与 Chromium；新消息可显示系统提醒并返回精确会话 | 不需要自行拼装桌面运行环境，窗口不在前台时也能及时发现新咨询和待人工会话 |
-| 本机安全与更新 | 登录信息只存 macOS Keychain 或 Windows Credential Manager；macOS 更新包同时校验签名、版本、应用身份、机型和数据兼容级别 | 凭据不落普通配置或浏览器存储，升级时也不会只凭一个下载链接直接覆盖应用 |
+| 本机登录与更新 | 记住的工作台密码存入系统凭据库，闲鱼授权 Cookie 保存在本机数据库；macOS 更新包校验签名、版本、应用身份、机型和数据兼容级别 | 区分工作台登录和平台授权，升级前检查受信任来源与版本 |
 
 桌面版请从本仓库的 [Releases](https://github.com/genoooool/xianyu-super-butler/releases/latest) 下载。
 Windows 安装包目前没有 Authenticode 签名，首次运行可能出现“未知发布者”提示。下文引用的
@@ -47,7 +59,7 @@ Windows 安装包目前没有 Authenticode 签名，首次运行可能出现“�
 
 - 🏪 **多账号管理** — 扫码即接入，一个后台管完所有小号，逐账号独立配置策略
 - 📦 **自动发货** — 卡密自动发出，支持多规格、多数量，发货前风险拦截
-- 💬 **自动回复** — 关键词精确命中 + AI 议价，可设最低价与议价轮数，绝不越线让价
+- 💬 **自动回复** — 关键词、固定 QA 与 AI 回复组合使用；价格和承诺需要业务依据，复杂情况转人工
 - ⭐ **买家互动** — 确认收货后自动评价、自动求小红花、自动发送致谢文本
 - 🤖 **商品自动化** — 商品同步、素材库、定时擦亮、自动上下架
 - 📊 **经营看板** — 成交额、到账、退款、订单和库存一屏掌握，**历史订单可一次性拉回**
@@ -70,14 +82,14 @@ Windows 安装包目前没有 Authenticode 签名，首次运行可能出现“�
 | 消息管理 | 闲鱼会话列表、消息收发、搜索筛选、回复决策日志和过滤规则 |
 | 通知与日志 | 通知渠道、账号绑定、风险日志和系统日志 |
 | 设置 | 管理员账号与改密、注册与邮箱验证开关、服务、备份及系统配置 |
-| 公告与更新 | 从自建地址拉取公告与版本信息，首页横幅提示，「关于」页手动检查更新 |
+| 软件更新 | macOS 从本仓库 Release 检查签名更新；Windows 通过 Release 下载新安装包 |
 
 ## 界面预览
 
 ### 账号管理：一个后台管完所有小号
 
-扫码添加账号，实时显示监听状态。每个账号可独立设置自动确认、人工接入暂停时长、
-是否启用 AI 回复，互不干扰。
+扫码添加账号，显示监听与授权状态。每个账号可独立配置自动确认和客服总开关；
+人工接管按会话保持关闭，直到显式重新开启。
 
 ![账号管理](docs/screenshots/accounts.png)
 
@@ -111,6 +123,16 @@ Windows 安装包目前没有 Authenticode 签名，首次运行可能出现“�
 ![消息中心](docs/screenshots/message-center.png)
 
 ## 如何部署
+
+### 桌面安装（macOS / Windows）
+
+从[本仓库 Releases](https://github.com/genoooool/xianyu-super-butler/releases/latest)下载与你的系统匹配的文件：
+
+- **macOS Apple Silicon（M 系列）**：下载 `darwin-aarch64.zip`，解压后将应用放入“应用程序”。目前没有在此 Release 提供已验证的 Intel Mac 安装包。
+- **Windows x64**：下载 `windows-x64-setup.exe` 安装。安装包尚无 Authenticode 签名；macOS 包采用本地 ad-hoc 签名，尚未经过 Apple 公证。
+- 启动后先登录工作台，再在账号管理中扫码授权闲鱼。升级前退出工作台并保留最新数据备份；已有授权是否需重扫由平台实际返回决定。
+
+常见安装、模型费用、数据存储与适用范围问题见[FAQ](docs/faq.md)。
 
 ### 一条命令直接启动（最快，不用克隆仓库）
 

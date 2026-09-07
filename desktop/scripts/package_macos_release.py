@@ -40,10 +40,21 @@ def main():
     if not args.backend.joinpath('xianyu-backend').is_file(): raise ValueError('Missing built backend')
     args.output_dir.mkdir(parents=True,exist_ok=False)
     app=args.output_dir/'闲鱼工作台.app'
-    run(['ditto',args.base_app,app])
+    app.mkdir()
+    # Copy only retained inputs; the old backend is not a release input.
+    # Avoid copying it merely to keep another unused full backend beside the app.
+    for child in args.base_app.iterdir():
+        if child.name != 'Contents':
+            run(['ditto',child,app/child.name])
+    contents=app/'Contents'; contents.mkdir()
+    for child in (args.base_app/'Contents').iterdir():
+        if child.name != 'Resources':
+            run(['ditto',child,contents/child.name])
     resources=app/'Contents/Resources'
-    # Preserve superseded generated resources, never delete a user's installed app.
-    (resources/'backend').rename(args.output_dir/'inherited-backend-unused')
+    resources.mkdir()
+    for child in (args.base_app/'Contents/Resources').iterdir():
+        if child.name != 'backend':
+            run(['ditto',child,resources/child.name])
     run(['ditto',args.backend,resources/'backend'])
     shutil.copy2(args.native,app/'Contents/MacOS/xianyu-workbench')
     plist_path=app/'Contents/Info.plist'
