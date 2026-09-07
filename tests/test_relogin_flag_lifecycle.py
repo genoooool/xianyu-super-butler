@@ -96,7 +96,7 @@ class ReloginFlagLifecycleTests(unittest.TestCase):
         import inspect
         import XianyuAutoAsync
 
-        source = inspect.getsource(XianyuAutoAsync.XianyuLive.refresh_token)
+        source = inspect.getsource(XianyuAutoAsync.XianyuLive._refresh_token_impl)
         success_marker = 'self.last_token_refresh_status = "success"'
         self.assertIn(success_marker, source)
 

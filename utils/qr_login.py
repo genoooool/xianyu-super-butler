@@ -363,6 +363,20 @@ class QRLoginManager:
                             if k == 'unb':
                                 session.unb = v
 
+                        if data.get('dialogAction') in {'keepLoginConfirm', 'keepLoginConfirmDialog', 'keepLoginSilentNoticeDialog'}:
+                            from utils.platform_session import PlatformSession, login_data
+                            async with PlatformSession(self._cookie_marshal(session.cookies)) as platform:
+                                confirmed = await platform.confirm_keep_login(resp.json())
+                                new_data = login_data(confirmed)
+                                if new_data.get('dialogAction') in {'keepLoginConfirm', 'keepLoginConfirmDialog', 'keepLoginSilentNoticeDialog'}:
+                                    raise GetLoginParamsError('保持登录确认尚未完成')
+                                refreshed = platform.cookies()
+                                if session.unb and refreshed.get('unb') != session.unb:
+                                    raise GetLoginParamsError('保持登录确认账号不一致')
+                                session.cookies = refreshed
+                                session.unb = refreshed.get('unb')
+                                data = new_data
+
                         if data.get("iframeRedirect") is True and not session.unb:
                             # 账号被风控，需要手机验证。
                             #

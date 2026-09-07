@@ -2031,6 +2031,22 @@ class DBManager:
                 logger.error(f"获取账号自动回复暂停时间失败: {e}")
                 return 10
 
+    def compare_and_update_cookie(self, cookie_id: str, expected: str, value: str, user_id: int) -> bool:
+        """Refresh an existing owner's credential only if no newer login replaced it."""
+        with self.lock:
+            try:
+                # Keep credential parameters out of the SQL diagnostic logger.
+                cursor = self.conn.execute(
+                    "UPDATE cookies SET value = ? WHERE id = ? AND value = ? AND user_id = ?",
+                    (value, cookie_id, expected, user_id),
+                )
+                self.conn.commit()
+                return cursor.rowcount == 1
+            except Exception:
+                self.conn.rollback()
+                logger.error("账号续期凭证保存失败")
+                return False
+
     def update_cookie_account_info(self, cookie_id: str, cookie_value: str = None, username: str = None, password: str = None, show_browser: bool = None, user_id: int = None) -> bool:
         """更新Cookie的账号信息（包括cookie值、用户名、密码和显示浏览器设置）
         如果记录不存在，会先创建记录（需要提供cookie_value和user_id）

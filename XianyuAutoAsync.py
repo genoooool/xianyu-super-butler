@@ -27,6 +27,7 @@ from app.db_manager import db_manager
 from app.specification import combine_legacy_specification
 from app.desktop_updates import update_gate
 from utils.log_sanitizer import redact_log_record, redact_sensitive_text
+from utils.platform_session import PlatformSession, silent_mode, marshal_cookies
 
 # 滑块验证补丁已废弃，使用集成的 Playwright 登录方法
 # 不再需要猴子补丁，所有功能已集成到 XianyuSliderStealth 类中
@@ -815,9 +816,10 @@ class XianyuLive:
 
         # Cookie刷新定时任务
         self.cookie_refresh_task = None
-        self.cookie_refresh_interval = 1200  # 1小时 = 3600秒
+        self.cookie_refresh_interval = 1200  # 每20分钟检查授权
         self.last_cookie_refresh_time = 0
         self.cookie_refresh_lock = asyncio.Lock()  # 使用Lock防止重复执行Cookie刷新
+        self.last_keep_login_attempt = 0
         self.cookie_refresh_enabled = True  # 是否启用Cookie刷新功能
 
         # 商品同步定时任务
@@ -2246,6 +2248,68 @@ class XianyuLive:
 
 
     async def refresh_token(self, captcha_retry_count: int = 0):
+        # Token polling and periodic renewal share one per-account writer.
+        async with self.cookie_refresh_lock:
+            return await self._refresh_token_impl(captcha_retry_count)
+
+    async def _save_refreshed_cookies(self, expected, candidate):
+        """A late refresh cannot replace a newer QR login or change ownership."""
+        candidate_fields = trans_cookies(candidate)
+        if candidate_fields.get('unb') != self.myid:
+            return False
+        account = await asyncio.to_thread(db_manager.get_cookie_details, self.cookie_id)
+        if not account or account.get('user_id') != self.user_id:
+            return False
+        saved = await asyncio.to_thread(
+            db_manager.compare_and_update_cookie,
+            self.cookie_id, expected, candidate, self.user_id,
+        )
+        if not saved:
+            latest = await asyncio.to_thread(db_manager.get_cookie_details, self.cookie_id)
+            if latest and latest.get('user_id') == self.user_id:
+                latest_fields = trans_cookies(latest.get('value') or '')
+                if latest_fields.get('unb') == self.myid:
+                    self.cookies_str = latest['value']
+                    self.cookies = latest_fields
+            logger.info(f"【{self.cookie_id}】续期凭证未写入，保留数据库中的最新授权")
+            return False
+        self.cookies_str = candidate
+        self.cookies = candidate_fields
+        from app.cookie_manager import manager
+        if manager and manager.instances.get(self.cookie_id) is self:
+            manager.cookies[self.cookie_id] = candidate
+        return True
+
+    async def _enable_platform_keep_login(self):
+        if silent_mode(self.cookies) in {'long_login', 'backup'}:
+            return
+        if time.time() - self.last_keep_login_attempt < 3600:
+            return
+        self.last_keep_login_attempt = time.time()
+        expected = self.cookies_str
+        async with PlatformSession(expected, self.device_id) as session:
+            result = await session.enable_keep_login()
+        if result.status in {'success', 'missing_long_token'}:
+            if await self._save_refreshed_cookies(expected, result.cookies):
+                self.current_token = result.token
+        logger.info(f"【{self.cookie_id}】保存闲鱼长期登录信息: {result.status}")
+
+    async def _renew_platform_login(self):
+        expected = self.cookies_str
+        async with PlatformSession(expected, self.device_id) as session:
+            result = await session.renew()
+        if result.status == 'success':
+            if not await self._save_refreshed_cookies(expected, result.cookies):
+                return 'superseded'
+            self.current_token = result.token
+            self.last_token_refresh_time = time.time()
+            self.last_token_refresh_status = 'success'
+            self.needs_relogin = False
+            self.relogin_reason = ''
+        logger.info(f"【{self.cookie_id}】闲鱼免扫码续期: {result.status}")
+        return result.status
+
+    async def _refresh_token_impl(self, captcha_retry_count: int = 0):
         """刷新token
 
         Args:
@@ -2318,8 +2382,12 @@ class XianyuLive:
                 account_info = await asyncio.to_thread(
                     db_manager.get_cookie_details, self.cookie_id
                 )
-                if account_info and account_info.get('cookie_value'):
-                    new_cookies_str = account_info.get('cookie_value')
+                if account_info and account_info.get('value'):
+                    new_cookies_str = account_info.get('value')
+                    if (account_info.get('user_id') != self.user_id or
+                            trans_cookies(new_cookies_str).get('unb') != self.myid):
+                        self.last_token_refresh_status = 'account_mismatch'
+                        return None
                     if new_cookies_str != self.cookies_str:
                         logger.info(f"【{self.cookie_id}】检测到数据库中的cookie已更新，重新加载cookie")
                         self.cookies_str = new_cookies_str
@@ -2394,6 +2462,7 @@ class XianyuLive:
             )
 
             async with aiohttp.ClientSession() as session:
+                request_cookies = self.cookies_str
                 async with session.post(
                     api_url,
                     params=params,
@@ -2432,12 +2501,11 @@ class XianyuLive:
 
                         # 更新cookies
                         if new_cookies:
-                            self.cookies.update(new_cookies)
-                            # 生成新的cookie字符串
-                            self.cookies_str = '; '.join([f"{k}={v}" for k, v in self.cookies.items()])
-                            # 更新数据库中的Cookie
-                            await self.update_config_cookies()
-                            logger.warning("已更新Cookie到数据库")
+                            candidate = dict(trans_cookies(request_cookies))
+                            candidate.update(new_cookies)
+                            if not await self._save_refreshed_cookies(request_cookies, marshal_cookies(candidate)):
+                                self.last_token_refresh_status = 'superseded'
+                                return None
 
                     if isinstance(res_json, dict):
                         ret_value = res_json.get('ret', [])
@@ -2467,7 +2535,8 @@ class XianyuLive:
                                 self.needs_relogin = False
                                 self.relogin_reason = ''
                                 risk_control.registry.get(self.cookie_id).reset()
-                                return new_token
+                                await self._enable_platform_keep_login()
+                                return self.current_token
 
                     # 检查是否需要滑块验证
                     if self._need_captcha_verification(res_json):
@@ -2521,7 +2590,7 @@ class XianyuLive:
                                 # await self._restart_instance()
                                 
                                 # 重新尝试刷新token（递归调用，但有深度限制）
-                                return await self.refresh_token(captcha_retry_count + 1)
+                                return await self._refresh_token_impl(captcha_retry_count + 1)
                             else:
                                 logger.error(f"【{self.cookie_id}】滑块验证失败")
 
@@ -2593,16 +2662,15 @@ class XianyuLive:
                     #       mtop 的签名令牌 _m_h5_tk 过时了。失败响应本身就会
                     #       set-cookie 下发新令牌，重签一次即可，属可恢复。
                     #   FAIL_SYS_SESSION_EXPIRED::Session过期
-                    #       登录会话（cookie2 / unb）真的死了，滑块和等待都救不回来，
-                    #       只能重新扫码。
+                    #       当前会话失效，先尝试官网长期凭证静默恢复。
                     #
                     # 原来一个 if 把两者一起打上「需重新扫码」终态，于是仅仅令牌
                     # 过期也会让界面提示重扫；而实测紧接着的下一次刷新就返回
                     # SUCCESS，账号完全正常。
                     if isinstance(res_json, dict):
                         res_json_str = json.dumps(res_json, ensure_ascii=False, separators=(',', ':'))
-                        session_expired = 'Session过期' in res_json_str
-                        token_expired = '令牌过期' in res_json_str
+                        session_expired = 'Session过期' in res_json_str or 'FAIL_SYS_SESSION_EXPIRED' in res_json_str
+                        token_expired = '令牌过期' in res_json_str or 'FAIL_SYS_TOKEN_EX' in res_json_str
 
                         if token_expired and not session_expired:
                             # 令牌已随本次响应更新，直接带新令牌重试。必须递增计数：
@@ -2612,9 +2680,20 @@ class XianyuLive:
                                 f"【{self.cookie_id}】签名令牌过期（可恢复），"
                                 f"带新令牌重试第 {captcha_retry_count + 1} 次"
                             )
-                            return await self.refresh_token(captcha_retry_count + 1)
+                            return await self._refresh_token_impl(captcha_retry_count + 1)
 
                         if session_expired:
+                            renewal_status = await self._renew_platform_login()
+                            if renewal_status == 'success':
+                                risk_control.registry.get(self.cookie_id).reset()
+                                return self.current_token
+                            if renewal_status not in {'expired', 'unavailable'}:
+                                # A network failure or cooldown does not require a new scan.
+                                self.last_token_refresh_status = renewal_status
+                                if renewal_status == 'verification_required':
+                                    self.needs_relogin = True
+                                    self.relogin_reason = '闲鱼要求手机验证，请重新扫码完成授权'
+                                return None
                             # 调用统一的密码登录刷新方法
                             refresh_success = await self._try_password_login_refresh("Session过期")
 
@@ -2637,7 +2716,7 @@ class XianyuLive:
                                 self.relogin_reason = ''
                                 # 刷新成功后重新获取 token。必须递增计数，否则上限判断
                                 # 永远不成立，会形成无限递归重试并持续加剧平台风控。
-                                return await self.refresh_token(captcha_retry_count + 1)
+                                return await self._refresh_token_impl(captcha_retry_count + 1)
 
                     ret_value = res_json.get('ret', []) if isinstance(res_json, dict) else []
                     logger.error(
@@ -3181,7 +3260,7 @@ class XianyuLive:
             
             # 【重要】先检查数据库中的cookie是否已经更新
             # 如果用户已经手动更新了cookie，就不需要触发密码登录刷新
-            db_cookie_value = account_info.get('cookie_value', '')
+            db_cookie_value = account_info.get('value', '')
             if db_cookie_value and db_cookie_value != self.cookies_str:
                 logger.info(f"【{self.cookie_id}】检测到数据库中的cookie已更新，重新加载cookie")
                 self.cookies_str = db_cookie_value
@@ -3295,180 +3374,13 @@ class XianyuLive:
             return False
 
     async def _verify_cookie_validity(self) -> dict:
-        """验证Cookie的有效性，通过实际调用API测试
-        
-        Returns:
-            dict: {
-                'valid': bool,  # 总体是否有效
-                'confirm_api': bool,  # 确认发货API是否有效
-                'image_api': bool,  # 图片上传API是否有效
-                'details': str  # 详细信息
-            }
-        """
-        logger.info(f"【{self.cookie_id}】开始验证Cookie有效性（使用真实API调用）...")
-        
-        result = {
-            'valid': True,
-            'confirm_api': None,
-            'image_api': None,
-            'details': []
-        }
-        
-        # 1. 测试确认发货API - 使用测试订单ID实际调用
-        # try:
-        #     logger.info(f"【{self.cookie_id}】测试确认发货API（使用测试数据实际调用）...")
-            
-        #     # 确保session存在
-        #     if not self.session:
-        #         import aiohttp
-        #         connector = aiohttp.TCPConnector(limit=100, limit_per_host=30)
-        #         timeout = aiohttp.ClientTimeout(total=30)
-        #         self.session = aiohttp.ClientSession(connector=connector, timeout=timeout)
-            
-        #     # 创建临时的确认发货实例
-        #     from app.secure_confirm import SecureConfirm
-        #     confirm_tester = SecureConfirm(
-        #         session=self.session,
-        #         cookies_str=self.cookies_str,
-        #         cookie_id=self.cookie_id,
-        #         main_instance=self
-        #     )
-            
-        #     # 使用一个测试订单ID（不存在的订单ID）
-        #     # 如果Cookie有效，应该返回"订单不存在"类的错误
-        #     # 如果Cookie无效，会返回"Session过期"错误
-        #     test_order_id = "999999999999999999"  # 不存在的测试订单ID
-            
-        #     # 实际调用API (retry_count=3阻止重试，快速失败)
-        #     response = await confirm_tester.auto_confirm(test_order_id, retry_count=3)
-            
-        #     # 分析响应
-        #     if response and isinstance(response, dict):
-        #         error_msg = str(response.get('error', ''))
-        #         success = response.get('success', False)
-                
-        #         # 检查是否是Session过期错误
-        #         if 'Session过期' in error_msg or 'SESSION_EXPIRED' in error_msg:
-        #             logger.warning(f"【{self.cookie_id}】❌ 确认发货API验证失败: Session过期")
-        #             result['confirm_api'] = False
-        #             result['valid'] = False
-        #             result['details'].append("确认发货API: Session过期")
-        #         elif '令牌过期' in error_msg:
-        #             logger.warning(f"【{self.cookie_id}】❌ 确认发货API验证失败: 令牌过期")
-        #             result['confirm_api'] = False
-        #             result['valid'] = False
-        #             result['details'].append("确认发货API: 令牌过期")
-        #         elif success:
-        #             # 竟然成功了（不太可能，因为是测试订单ID）
-        #             logger.info(f"【{self.cookie_id}】✅ 确认发货API验证通过: API调用成功")
-        #             result['confirm_api'] = True
-        #             result['details'].append("确认发货API: 通过验证")
-        #         elif error_msg and len(error_msg) > 0:
-        #             # 有其他错误信息（如订单不存在、重试次数过多等），说明Cookie是有效的
-        #             logger.info(f"【{self.cookie_id}】✅ 确认发货API验证通过: Cookie有效（返回业务错误: {error_msg[:50]}）")
-        #             result['confirm_api'] = True
-        #             result['details'].append(f"确认发货API: 通过验证")
-        #         else:
-        #             # 没有明确信息，保守认为可能有问题
-        #             logger.warning(f"【{self.cookie_id}】⚠️ 确认发货API验证警告: 响应不明确")
-        #             result['confirm_api'] = False
-        #             result['valid'] = False
-        #             result['details'].append("确认发货API: 响应不明确")
-        #     else:
-        #         # 没有响应，可能有问题
-        #         logger.warning(f"【{self.cookie_id}】⚠️ 确认发货API验证警告: 无响应")
-        #         result['confirm_api'] = False
-        #         result['valid'] = False
-        #         result['details'].append("确认发货API: 无响应")
-                    
-        # except Exception as e:
-        #     error_str = self._safe_str(e)
-        #     # 检查异常信息中是否包含Session过期
-        #     if 'Session过期' in error_str or 'SESSION_EXPIRED' in error_str:
-        #         logger.warning(f"【{self.cookie_id}】❌ 确认发货API验证失败: Session过期")
-        #         result['confirm_api'] = False
-        #         result['valid'] = False
-        #         result['details'].append("确认发货API: Session过期")
-        #     else:
-        #         logger.error(f"【{self.cookie_id}】确认发货API验证异常: {error_str}")
-        #         # 网络异常等问题，不一定是Cookie问题，暂时标记为通过
-        #         result['confirm_api'] = True
-        #         result['details'].append(f"确认发货API: 调用异常(可能非Cookie问题)")
-        
-        # 2. 测试图片上传API - 创建测试图片并实际上传
+        """Validate authentication without uploading images or touching orders."""
         try:
-            logger.info(f"【{self.cookie_id}】测试图片上传API（使用测试图片实际上传）...")
-            
-            # 创建一个最小的测试图片（1x1像素的PNG）
-            import tempfile
-            import os
-            from PIL import Image
-            
-            # 创建临时目录
-            temp_dir = tempfile.gettempdir()
-            test_image_path = os.path.join(temp_dir, f'cookie_test_{self.cookie_id}.png')
-            
-            try:
-                # 创建1x1像素的白色图片
-                img = Image.new('RGB', (1, 1), color='white')
-                img.save(test_image_path, 'PNG')
-                logger.info(f"【{self.cookie_id}】已创建测试图片: {test_image_path}")
-                
-                # 创建图片上传实例
-                from utils.image_uploader import ImageUploader
-                uploader = ImageUploader(cookies_str=self.cookies_str)
-                
-                # 创建session
-                await uploader.create_session()
-                
-                try:
-                    # 实际上传测试图片
-                    upload_result = await uploader.upload_image(test_image_path)
-                finally:
-                    # 确保关闭session
-                    await uploader.close_session()
-                
-                # 分析上传结果
-                if upload_result:
-                    # 上传成功，Cookie有效
-                    logger.info(f"【{self.cookie_id}】✅ 图片上传API验证通过: 上传成功 ({upload_result[:50]}...)")
-                    result['image_api'] = True
-                    result['details'].append("图片上传API: 通过验证")
-                else:
-                    # 上传失败，需要进一步判断原因
-                    # 如果是Cookie失效，通常会返回HTML登录页面
-                    logger.warning(f"【{self.cookie_id}】❌ 图片上传API验证失败: 上传失败（可能是Cookie失效）")
-                    result['image_api'] = False
-                    result['valid'] = False
-                    result['details'].append("图片上传API: 上传失败，可能Cookie已失效")
-                
-            finally:
-                # 清理测试图片
-                if os.path.exists(test_image_path):
-                    try:
-                        os.remove(test_image_path)
-                        logger.debug(f"【{self.cookie_id}】已删除测试图片")
-                    except:
-                        pass
-                        
-        except Exception as e:
-            error_str = self._safe_str(e)
-            logger.error(f"【{self.cookie_id}】图片上传API验证异常: {error_str}")
-            # 图片上传异常，标记为失败
-            result['image_api'] = False
-            result['valid'] = False
-            result['details'].append(f"图片上传API: 验证异常 - {error_str[:50]}")
-        
-        # 汇总结果
-        if result['valid']:
-            logger.info(f"【{self.cookie_id}】✅ Cookie验证通过: 所有关键API均可用")
-        else:
-            logger.warning(f"【{self.cookie_id}】❌ Cookie验证失败:")
-            for detail in result['details']:
-                logger.warning(f"【{self.cookie_id}】  - {detail}")
-        
-        result['details'] = '; '.join(result['details'])
-        return result
+            async with PlatformSession(self.cookies_str, self.device_id) as session:
+                result = await session.verify_token()
+            return {'valid': result.status == 'success', 'details': result.status}
+        except Exception as exc:
+            return {'valid': False, 'details': type(exc).__name__}
 
     async def _restart_instance(self):
         """重启XianyuLive实例
@@ -8028,7 +7940,7 @@ class XianyuLive:
 
 
     async def cookie_refresh_loop(self):
-        """Cookie刷新定时任务 - 每小时执行一次"""
+        """每20分钟检查授权，复用串行的令牌/长期登录续期流程。"""
         try:
             while True:
                 try:
@@ -8058,8 +7970,8 @@ class XianyuLive:
                             logger.warning(f"【{self.cookie_id}】Cookie刷新任务已在执行中，跳过本次触发")
                         else:
                             logger.info(f"【{self.cookie_id}】开始执行Cookie刷新任务...")
-                            # 在独立的任务中执行Cookie刷新，避免阻塞主循环
-                            asyncio.create_task(self._execute_cookie_refresh(current_time))
+                            # Account shutdown also cancels any in-flight renewal.
+                            await self._execute_cookie_refresh(current_time)
 
                     # 每分钟检查一次是否需要执行
                     await self._interruptible_sleep(60)
@@ -8084,87 +7996,20 @@ class XianyuLive:
             logger.info(f"【{self.cookie_id}】Cookie刷新循环已退出")
 
     async def _execute_cookie_refresh(self, current_time):
-        """独立执行Cookie刷新任务，避免阻塞主循环"""
-
-        # 使用Lock确保原子性，防止重复执行
-        async with self.cookie_refresh_lock:
-            try:
-                logger.info(f"【{self.cookie_id}】开始Cookie刷新任务，暂时暂停心跳以避免连接冲突...")
-
-                # 暂时暂停心跳任务，避免与浏览器操作冲突
-                heartbeat_was_running = False
-                if self.heartbeat_task and not self.heartbeat_task.done():
-                    heartbeat_was_running = True
-                    self.heartbeat_task.cancel()
-                    logger.warning(f"【{self.cookie_id}】已暂停心跳任务")
-
-                # 为整个Cookie刷新任务添加超时保护（3分钟，缩短时间减少影响）
-                success = await asyncio.wait_for(
-                    self._refresh_cookies_via_browser(),
-                    timeout=180.0  # 3分钟超时，减少对WebSocket的影响
-                )
-
-                # 重新启动心跳任务
-                if heartbeat_was_running and self.ws and not self.ws.closed:
-                    logger.warning(f"【{self.cookie_id}】重新启动心跳任务")
-                    self.heartbeat_task = asyncio.create_task(self.heartbeat_loop(self.ws))
-
-                if success:
-                    self.last_cookie_refresh_time = current_time
-                    logger.info(f"【{self.cookie_id}】Cookie刷新任务完成，心跳已恢复")
-                    
-                    # 刷新成功后，验证Cookie有效性
-                    logger.info(f"【{self.cookie_id}】开始验证刷新后的Cookie有效性...")
-                    try:
-                        validation_result = await self._verify_cookie_validity()
-                        
-                        if not validation_result['valid']:
-                            logger.warning(f"【{self.cookie_id}】❌ Cookie验证失败: {validation_result['details']}")
-                            logger.warning(f"【{self.cookie_id}】检测到Cookie可能无法用于关键API，尝试通过密码登录重新获取...")
-                            
-                            # 触发密码登录刷新
-                            password_refresh_success = await self._try_password_login_refresh("Cookie验证失败(关键API不可用)")
-                            
-                            if password_refresh_success:
-                                logger.info(f"【{self.cookie_id}】✅ 密码登录刷新成功，Cookie已更新")
-                            else:
-                                logger.warning(f"【{self.cookie_id}】⚠️ 密码登录刷新失败，Cookie可能仍然无效")
-                                # 发送通知
-                                await self.send_token_refresh_notification(
-                                    f"Cookie验证失败且密码登录刷新也失败\n验证详情: {validation_result['details']}",
-                                    "cookie_validation_failed"
-                                )
-                        else:
-                            logger.info(f"【{self.cookie_id}】✅ Cookie验证通过: {validation_result['details']}")
-                            
-                    except Exception as verify_e:
-                        logger.error(f"【{self.cookie_id}】Cookie验证过程异常: {self._safe_str(verify_e)}")
-                        import traceback
-                        logger.error(f"【{self.cookie_id}】详细堆栈:\n{traceback.format_exc()}")
-                else:
-                    logger.warning(f"【{self.cookie_id}】Cookie刷新任务失败")
-                    # 即使失败也要更新时间，避免频繁重试
-                    self.last_cookie_refresh_time = current_time
-
-            except asyncio.TimeoutError:
-                # 超时也要更新时间，避免频繁重试
-                self.last_cookie_refresh_time = current_time
-            except Exception as e:
-                logger.error(f"【{self.cookie_id}】执行Cookie刷新任务异常: {self._safe_str(e)}")
-                # 异常也要更新时间，避免频繁重试
-                self.last_cookie_refresh_time = current_time
-            finally:
-                # 确保心跳任务恢复（如果WebSocket仍然连接）
-                if (self.ws and not self.ws.closed and
-                    (not self.heartbeat_task or self.heartbeat_task.done())):
-                    logger.info(f"【{self.cookie_id}】Cookie刷新完成，心跳任务正常运行")
-                    self.heartbeat_task = asyncio.create_task(self.heartbeat_loop(self.ws))
-
-                # 清空消息接收标志，允许下次正常执行Cookie刷新
-                self.last_message_received_time = 0
-                logger.warning(f"【{self.cookie_id}】Cookie刷新完成，已清空消息接收标志")
-
-
+        """Check authentication without pausing heartbeats or uploading test images."""
+        try:
+            token = await self.refresh_token()
+            if token:
+                logger.info(f"【{self.cookie_id}】闲鱼授权检查通过，重新建立消息连接")
+                self.connection_restart_flag = True
+                if self.ws and not self.ws.closed:
+                    await self.ws.close()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"【{self.cookie_id}】闲鱼授权检查暂时失败: {type(exc).__name__}")
+        finally:
+            self.last_cookie_refresh_time = current_time
 
     def enable_cookie_refresh(self, enabled: bool = True):
         """启用或禁用Cookie刷新功能"""
@@ -8436,6 +8281,10 @@ class XianyuLive:
             # 生成真实cookie字符串
             real_cookies_str = '; '.join([f"{k}={v}" for k, v in real_cookies_dict.items()])
 
+            if real_cookies_dict.get('unb') != qr_cookies_dict.get('unb'):
+                logger.warning(f"【{target_cookie_id}】扫码增强返回的账号不一致，保留原授权")
+                return False
+
             logger.info(f"【{target_cookie_id}】真实Cookie已获取，包含 {len(real_cookies_dict)} 个字段")
 
             # 检查关键字段
@@ -8486,7 +8335,9 @@ class XianyuLive:
             existing_cookie = db_manager.get_cookie_details(target_cookie_id)
             if existing_cookie:
                 # 现有账号，使用 update_cookie_account_info 避免覆盖其他字段（如 pause_duration, remark 等）
-                success = db_manager.update_cookie_account_info(target_cookie_id, cookie_value=real_cookies_str)
+                success = db_manager.compare_and_update_cookie(
+                    target_cookie_id, qr_cookies_str, real_cookies_str, target_user_id,
+                )
             else:
                 # 新账号，使用 save_cookie
                 success = db_manager.save_cookie(target_cookie_id, real_cookies_str, target_user_id)
