@@ -137,11 +137,15 @@ def verify_desktop_bootstrap(base_url: str, token: str) -> None:
     except urllib.error.HTTPError as error:
         if error.code != 403:
             raise
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    cookies = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
     bootstrap_url = base_url + "/desktop/bootstrap?" + urllib.parse.urlencode({"token": token})
     with opener.open(bootstrap_url, timeout=3) as response:
         if response.status != 200 or response.url != bootstrap_url:
             raise RuntimeError("Desktop bootstrap must commit a document before navigation")
+    desktop_cookie = next((cookie for cookie in cookies if cookie.name == 'xianyu_desktop_access'), None)
+    if desktop_cookie is None or desktop_cookie.expires is not None or not desktop_cookie.discard:
+        raise RuntimeError("Desktop access must last for the WebView session without a fixed expiry")
     with opener.open(base_url + "/", timeout=3) as response:
         if response.status != 200:
             raise RuntimeError("Desktop frontend did not accept the bootstrap cookie")

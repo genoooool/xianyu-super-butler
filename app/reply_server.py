@@ -225,8 +225,10 @@ def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(s
 
     token_data = SESSION_TOKENS[token]
 
-    # 检查token是否过期
-    if time.time() - token_data['timestamp'] > TOKEN_EXPIRE_TIME:
+    # Desktop sessions live only in this backend's memory and are additionally
+    # guarded by a per-launch cookie. Keep them usable while the app is running;
+    # logout still removes the token and restarting starts with an empty store.
+    if not DESKTOP_ACCESS_TOKEN and time.time() - token_data['timestamp'] > TOKEN_EXPIRE_TIME:
         del SESSION_TOKENS[token]
         return None
 
@@ -516,13 +518,15 @@ async def desktop_bootstrap(token: str = Query("")):
         '</body></html>',
         headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
     )
+    # Match the lifetime of the WebView session, rather than expiring a running
+    # desktop after 24 hours. Every backend launch uses a new random secret, so
+    # even a restored browser cookie cannot authorize a subsequent launch.
     response.set_cookie(
         DESKTOP_ACCESS_COOKIE,
         DESKTOP_ACCESS_TOKEN,
         httponly=True,
         secure=False,
         samesite="strict",
-        max_age=24 * 60 * 60,
     )
     return response
 
