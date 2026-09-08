@@ -96,6 +96,21 @@ class QrLoginFlowTests(unittest.IsolatedAsyncioTestCase):
             enhancement_release.set()
             await task
 
+    async def test_verified_website_cookie_skips_old_browser_enhancement(self):
+        with (patch.object(reply_server, 'process_qr_login_cookies', new=AsyncMock(return_value={
+                'account_id': 'account-1', '_manager_operation': None})),
+              patch.object(reply_server, '_enhance_qr_login_cookies', new=AsyncMock()) as enhance,
+              patch.object(reply_server, '_fetch_and_store_account_profile', new=AsyncMock())):
+            await reply_server._process_qr_login_session('verified', {
+                'cookies': 'unb=account-1', 'unb': 'account-1',
+                'browser_verified': True, 'long_login_enabled': True,
+            }, {'user_id': 7, 'username': 'tester'})
+        enhance.assert_not_awaited()
+        result = reply_server.qr_check_processed['verified']['result']
+        self.assertTrue(result['account_ready'])
+        self.assertTrue(result['long_login_enabled'])
+        self.assertEqual(result['cookie_refresh_status'], 'success')
+
 
 if __name__ == "__main__":
     unittest.main()

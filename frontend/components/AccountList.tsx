@@ -442,7 +442,7 @@ const AccountList: React.FC = () => {
       if (res.success && res.qr_code_url && res.session_id) {
         setQrCodeUrl(res.qr_code_url);
         setQrStatus('waiting');
-        setQrMessage('等待扫码');
+        setQrMessage(res.message || '等待扫码');
         qrSessionRef.current = res.session_id;
 
         const pollStatus = async () => {
@@ -450,12 +450,16 @@ const AccountList: React.FC = () => {
           try {
             const statusRes = await checkQRLoginStatus(res.session_id!);
             if (qrSessionRef.current !== res.session_id) return;
+            if (statusRes.qr_code_url) setQrCodeUrl(statusRes.qr_code_url);
 
             if (statusRes.status === 'success') {
               qrSessionRef.current = '';
               if (statusRes.account_ready) {
                 setQrStatus('success');
                 setQrMessage(statusRes.message || '账号 Cookie 已刷新并保存');
+                if (statusRes.long_login_enabled === false) {
+                  notify(statusRes.message || '账号已登录，但平台未提供长期凭证');
+                }
                 setTimeout(() => {
                   setShowQRModal(false);
                   loadAccounts();
@@ -468,7 +472,10 @@ const AccountList: React.FC = () => {
               return;
             }
 
-            if (statusRes.status === 'scanned') {
+            if (statusRes.status === 'waiting') {
+              setQrStatus('waiting');
+              setQrMessage(statusRes.message || '等待扫码');
+            } else if (statusRes.status === 'scanned') {
               setQrStatus('scanned');
               setQrMessage('已扫码，请在手机上确认登录');
             } else if (statusRes.status === 'processing') {
@@ -512,7 +519,7 @@ const AccountList: React.FC = () => {
         qrPollTimerRef.current = setTimeout(pollStatus, 300);
       } else {
         setQrStatus('error');
-        setQrMessage('二维码生成失败，请重试');
+        setQrMessage(res.message || '二维码生成失败，请重试');
       }
     } catch (e) {
       setQrStatus('error');

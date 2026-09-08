@@ -5637,7 +5637,7 @@ dependencies = [
 
 [[package]]
 name = "xianyu-workbench"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "cc",
  "flate2",

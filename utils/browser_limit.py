@@ -135,7 +135,17 @@ async def launch_browser(
     semaphore = _get_semaphore()
 
     # 在线程里等待，避免占着事件循环不放导致消息收发一起卡住
-    acquired = await asyncio.to_thread(semaphore.acquire, True, _ACQUIRE_TIMEOUT)
+    acquire_task = asyncio.create_task(asyncio.to_thread(semaphore.acquire, True, _ACQUIRE_TIMEOUT))
+    try:
+        acquired = await asyncio.shield(acquire_task)
+    except asyncio.CancelledError:
+        # The waiting thread cannot be cancelled. Return any slot it eventually
+        # acquires, even when the QR request has already timed out or closed.
+        def release_after_cancel(task):
+            if not task.cancelled() and task.exception() is None and task.result():
+                semaphore.release()
+        acquire_task.add_done_callback(release_after_cancel)
+        raise
     if not acquired:
         raise TimeoutError(
             f"{purpose}: 等待浏览器空闲超过 {_ACQUIRE_TIMEOUT} 秒。"

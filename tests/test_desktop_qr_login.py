@@ -1,0 +1,120 @@
+import asyncio
+import threading
+import time
+import unittest
+from unittest.mock import AsyncMock, Mock, patch
+
+from utils import browser_limit, desktop_qr_login
+from utils.platform_session import RenewalResult, marshal_cookies
+from utils.qr_login import QRLoginManager
+
+
+class DesktopQRTests(unittest.IsolatedAsyncioTestCase):
+    def fixture(self, *, long=True):
+        cookies = {'unb': 'account-1', 'cookie2': 'session'}
+        if long:
+            cookies.update(havana_lgc_exp=str(int((time.time() + 86400) * 1000)), havana_lgc2_77='long')
+        context = Mock(cookies=AsyncMock(return_value=[
+            {'domain': '.goofish.com', 'name': k, 'value': v, 'expires': -1}
+            for k, v in cookies.items()
+        ]))
+        platform = Mock()
+        platform.__aenter__ = AsyncMock(return_value=platform)
+        platform.__aexit__ = AsyncMock(return_value=None)
+        platform.same_account.return_value = True
+        platform.verify_token = AsyncMock(return_value=RenewalResult('success', marshal_cookies(cookies)))
+        platform.renew = AsyncMock(return_value=RenewalResult('expired'))
+        page = Mock()
+        avatar = Mock(hover=AsyncMock())
+        page.locator.return_value.first = avatar
+        switch = Mock(click=AsyncMock())
+        page.get_by_text.return_value.locator.return_value = switch
+        return page, context, platform, switch
+
+    async def test_enables_actual_switch_and_verifies_long_cookie(self):
+        page, context, platform, switch = self.fixture()
+        with (patch.object(desktop_qr_login, 'login_settings', new=AsyncMock(side_effect=[
+                {'canOpenLongLogin': True, 'hasLongTokenLogin': False},
+                {'canOpenLongLogin': True, 'hasLongTokenLogin': True}])),
+              patch.object(desktop_qr_login, 'PlatformSession', return_value=platform)):
+            cookies, enabled = await desktop_qr_login.collect_verified_login(page, context, 'account-1')
+        self.assertTrue(enabled)
+        self.assertEqual(cookies['unb'], 'account-1')
+        page.get_by_text.return_value.locator.assert_called_once_with('[class*="navBoxWrap"]')
+        switch.click.assert_awaited_once()
+        platform.verify_token.assert_awaited_once()
+
+    async def test_already_enabled_does_not_toggle_off(self):
+        page, context, platform, switch = self.fixture()
+        with (patch.object(desktop_qr_login, 'login_settings', new=AsyncMock(return_value={'hasLongTokenLogin': True})),
+              patch.object(desktop_qr_login, 'PlatformSession', return_value=platform)):
+            _, enabled = await desktop_qr_login.collect_verified_login(page, context, 'account-1')
+        self.assertTrue(enabled)
+        switch.click.assert_not_awaited()
+
+    async def test_short_session_is_not_reported_as_long(self):
+        page, context, platform, switch = self.fixture(long=False)
+        with (patch.object(desktop_qr_login, 'login_settings', new=AsyncMock(return_value={'hasLongTokenLogin': True})),
+              patch.object(desktop_qr_login, 'PlatformSession', return_value=platform)):
+            _, enabled = await desktop_qr_login.collect_verified_login(page, context, 'account-1')
+        self.assertFalse(enabled)
+
+    async def test_saved_long_login_can_renew_an_expired_session(self):
+        page, context, platform, _ = self.fixture()
+        success = platform.verify_token.return_value
+        platform.verify_token.return_value = RenewalResult('expired')
+        platform.renew.return_value = success
+        with (patch.object(desktop_qr_login, 'login_settings', new=AsyncMock(return_value={'hasLongTokenLogin': True})),
+              patch.object(desktop_qr_login, 'PlatformSession', return_value=platform)):
+            _, enabled = await desktop_qr_login.collect_verified_login(page, context, 'account-1')
+        self.assertTrue(enabled)
+        platform.renew.assert_awaited_once()
+
+    async def test_account_change_or_invalid_im_never_returns_candidate(self):
+        page, context, platform, _ = self.fixture()
+        with (patch.object(desktop_qr_login, 'login_settings', new=AsyncMock(return_value={'hasLongTokenLogin': True})),
+              patch.object(desktop_qr_login, 'PlatformSession', return_value=platform)):
+            with self.assertRaisesRegex(ValueError, 'account changed'):
+                await desktop_qr_login.collect_verified_login(page, context, 'different-account')
+            platform.verify_token.return_value = RenewalResult('expired')
+            with self.assertRaisesRegex(ValueError, 'authentication incomplete'):
+                await desktop_qr_login.collect_verified_login(page, context, 'account-1')
+
+    def test_only_unexpired_first_party_cookies_are_collected(self):
+        result = desktop_qr_login.first_party_cookies([
+            {'domain': '.goofish.com', 'name': 'unb', 'value': 'ok', 'expires': -1},
+            {'domain': 'evilgoofish.com', 'name': 'unb', 'value': 'bad', 'expires': -1},
+            {'domain': '.goofish.com', 'name': 'expired', 'value': 'bad', 'expires': 1},
+        ])
+        self.assertEqual(result, {'unb': 'ok'})
+
+    async def test_desktop_routes_to_full_website_without_raw_api(self):
+        manager = QRLoginManager()
+        with (patch.dict('os.environ', {'XIANYU_DESKTOP': '1'}),
+              patch.object(manager, '_generate_desktop_qr_code', new=AsyncMock(return_value={'success': True})) as website,
+              patch.object(manager, '_get_mh5tk', new=AsyncMock()) as raw):
+            self.assertTrue((await manager.generate_qr_code())['success'])
+        website.assert_awaited_once()
+        raw.assert_not_awaited()
+
+    async def test_cancelled_slot_wait_does_not_leak_later_acquisition(self):
+        semaphore = threading.Semaphore(0)
+        playwright = Mock()
+        with patch.object(browser_limit, '_get_semaphore', return_value=semaphore):
+            task = asyncio.create_task(browser_limit.launch_browser(playwright))
+            await asyncio.sleep(0.01)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            semaphore.release()
+            for _ in range(100):
+                await asyncio.sleep(0.01)
+                if semaphore.acquire(blocking=False):
+                    break
+            else:
+                self.fail('Cancelled browser acquisition consumed its slot')
+        playwright.chromium.launch.assert_not_called()
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import os
 import time
 import uuid
 import json
@@ -66,6 +67,9 @@ class QRLoginSession:
         self.verification_qr_code_url = None  # 验证URL的二维码，生成一次后复用
         self.verification_extended = False
         self.last_remote_status = None
+        self.message = None
+        self.browser_verified = False
+        self.long_login_enabled = False
 
     def extend_for_verification(self) -> None:
         """进入手机验证后延长会话寿命，只延一次。"""
@@ -213,6 +217,8 @@ class QRLoginManager:
     
     async def generate_qr_code(self) -> Dict[str, Any]:
         """生成二维码"""
+        if os.getenv('XIANYU_DESKTOP', '').lower() in {'1', 'true', 'yes'}:
+            return await self._generate_desktop_qr_code()
         try:
             # 创建新的会话
             session_id = str(uuid.uuid4())
@@ -470,6 +476,35 @@ class QRLoginManager:
             # 留在内存里。留一段窗口期让前端取走最终状态，再删。
             asyncio.create_task(self._discard_session_later(session_id))
 
+    async def _generate_desktop_qr_code(self) -> Dict[str, Any]:
+        from utils.desktop_qr_login import run_desktop_login
+
+        session = QRLoginSession(str(uuid.uuid4()))
+        self.sessions[session.session_id] = session
+        ready = asyncio.Event()
+
+        async def run():
+            try:
+                await run_desktop_login(session, ready)
+            finally:
+                asyncio.create_task(self._discard_session_later(session.session_id))
+
+        task = asyncio.create_task(run())
+        try:
+            await asyncio.wait_for(ready.wait(), timeout=25)
+            if session.qr_code_url and session.status not in {'error', 'cancelled'}:
+                return {'success': True, 'session_id': session.session_id,
+                        'qr_code_url': session.qr_code_url, 'message': session.message}
+        except asyncio.TimeoutError:
+            session.message = '官网二维码加载超时，请检查网络后重试。'
+        except asyncio.CancelledError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return {'success': False, 'message': session.message or '官网二维码未加载，请重试。'}
+
     async def _discard_session_later(self, session_id: str, delay: float = 60.0) -> None:
         """延迟丢弃会话，给前端留出读取最终状态的时间。"""
         try:
@@ -492,6 +527,10 @@ class QRLoginManager:
             'status': session.status,
             'session_id': session_id
         }
+        if session.message:
+            result['message'] = session.message
+        if session.qr_code_url:
+            result['qr_code_url'] = session.qr_code_url
         logger.debug(
             f"获取扫码会话状态: session={session_id}, status={session.status}, "
             f"cookie_count={len(session.cookies)}, has_unb={bool(session.unb)}"
@@ -550,7 +589,9 @@ class QRLoginManager:
         if session and session.status == 'success':
             return {
                 'cookies': self._cookie_marshal(session.cookies),
-                'unb': session.unb
+                'unb': session.unb,
+                'browser_verified': session.browser_verified,
+                'long_login_enabled': session.long_login_enabled,
             }
         return None
 

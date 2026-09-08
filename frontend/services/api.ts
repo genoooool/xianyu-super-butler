@@ -89,7 +89,7 @@ export const refreshAccountProfile = async (id: string): Promise<{ success: bool
   return post(`/cookies/${id}/refresh-profile`);
 };
 
-export const generateQRLogin = async (): Promise<{ success: boolean; session_id?: string; qr_code_url?: string }> => {
+export const generateQRLogin = async (): Promise<{ success: boolean; session_id?: string; qr_code_url?: string; message?: string }> => {
   return post('/qr-login/generate');
 };
 

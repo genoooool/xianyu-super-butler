@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 
-APP_VERSION = '1.0.4'
+APP_VERSION = '1.0.5'
 DATA_COMPATIBILITY = 1
 RELEASES_URL = 'https://github.com/genoooool/xianyu-super-butler/releases'
 

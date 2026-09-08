@@ -2929,6 +2929,31 @@ async def _process_qr_login_session(
             current_user
         )
         manager_operation = account_info.pop('_manager_operation', None)
+        if cookies_info.get('browser_verified'):
+            # Full website login has already collected and verified the cookie.
+            # Re-injecting an older snapshot into headless Chromium can race the
+            # running account and is unnecessary for this path.
+            await _await_cookie_manager_operation(manager_operation, account_info['account_id'], current_user)
+            account_info['real_cookie_refreshed'] = True
+            qr_check_processed[session_id] = {
+                'processed': True,
+                'timestamp': time.time(),
+                'result': {
+                    'status': 'success', 'account_ready': True,
+                    'cookie_refresh_status': 'success', 'account_info': account_info,
+                    'long_login_enabled': bool(cookies_info.get('long_login_enabled')),
+                    'message': ('账号已保存，已开启保存登录信息并验证聊天连接'
+                                if cookies_info.get('long_login_enabled') else
+                                '账号已保存，但平台未提供长期凭证，失效后仍需扫码'),
+                },
+            }
+            try:
+                await _fetch_and_store_account_profile(
+                    cookie_id=account_info['account_id'], cookies_str=cookies_info['cookies'],
+                    user_id=current_user['user_id'])
+            except Exception as exc:
+                log_with_user('warning', f'官网登录资料补全未完成: {type(exc).__name__}', current_user)
+            return
         result = {
             'status': 'success',
             'account_ready': True,
