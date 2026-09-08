@@ -172,6 +172,11 @@ textarea {
   font: inherit;
 }
 
+/* The composer is already a dedicated writing surface; avoid a second box. */
+textarea.chat-composer-input:focus-visible {
+  outline: none;
+}
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,

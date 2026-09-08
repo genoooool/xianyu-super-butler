@@ -7,7 +7,7 @@ import { notify } from '../services/feedback';
 export const EnabledBadge: React.FC<{ enabled: boolean }> = ({ enabled }) =>
   <span className={`inline-flex shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${enabled ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>{enabled ? '已启用' : '已停用'}</span>;
 
-export const ReplyImage: React.FC<{ id: string }> = ({ id }) => {
+export const ReplyImage: React.FC<{ id: string; compact?: boolean }> = ({ id, compact = false }) => {
   const [url, setUrl] = useState('');
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -19,8 +19,9 @@ export const ReplyImage: React.FC<{ id: string }> = ({ id }) => {
     }).catch(() => { if (active) setFailed(true); });
     return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [id]);
-  return url ? <img src={url} alt="回复图片" className="h-24 w-24 rounded-lg border border-[var(--border)] object-contain" /> :
-    <span className="flex h-24 w-24 items-center justify-center rounded-lg border text-xs">{failed ? '图片加载失败' : '加载图片…'}</span>;
+  const size = compact ? 'h-16 w-16' : 'h-24 w-24';
+  return url ? <img src={url} alt="回复图片" className={`${size} rounded-lg border border-[var(--border)] object-contain`} /> :
+    <span className={`flex ${size} items-center justify-center rounded-lg border text-xs`}>{failed ? '图片加载失败' : '加载图片…'}</span>;
 };
 
 export const ReplyImagePicker: React.FC<{ ids: string[]; onChange: (ids: string[]) => void; disabled?: boolean; onBusy?: (busy: boolean) => void }> = ({ ids, onChange, disabled, onBusy }) => {

@@ -221,6 +221,29 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
   // 快捷短语：人工客服常用话术
   const [quickPhrases, setQuickPhrases] = useState<QuickPhrase[]>([]);
   const [showPhrases, setShowPhrases] = useState(false);
+  const phrasesRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => { setShowPhrases(false); }, [destination, isActive]);
+  useEffect(() => {
+    if (!showPhrases) return;
+    const dismissOutside = (event: PointerEvent | FocusEvent) => {
+      if (event.target instanceof Node && !phrasesRef.current?.contains(event.target)) setShowPhrases(false);
+    };
+    const dismissEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowPhrases(false);
+        phrasesRef.current?.querySelector('button')?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', dismissOutside);
+    document.addEventListener('focusin', dismissOutside);
+    document.addEventListener('keydown', dismissEscape);
+    return () => {
+      document.removeEventListener('pointerdown', dismissOutside);
+      document.removeEventListener('focusin', dismissOutside);
+      document.removeEventListener('keydown', dismissEscape);
+    };
+  }, [showPhrases]);
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -601,6 +624,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
     setDraftImages(images);
     if (images.length) setShowImagePicker(true);
     setShowPhrases(false);
+    composerRef.current?.focus();
     void useQuickPhrase(phrase.id).catch(() => undefined);
   };
 
@@ -1043,17 +1067,19 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
                 <button type="button" title="添加图片" onClick={() => setShowImagePicker(value => !value)} disabled={sending || imageUploading} className="hover:text-[var(--text)]">
                   <Image className="h-5 w-5" />
                 </button>
-                <div className="relative">
+                <div ref={phrasesRef} className="relative">
                   <button
                     type="button"
                     title="快捷短语"
+                    aria-expanded={showPhrases}
+                    aria-controls="chat-quick-phrases"
                     onClick={() => setShowPhrases(value => !value)}
                     className={`hover:text-[var(--text)] ${showPhrases ? 'text-[var(--text)]' : ''}`}
                   >
                     <Zap className="h-5 w-5" />
                   </button>
                   {showPhrases && (
-                    <div className="absolute bottom-8 left-0 z-20 max-h-72 w-80 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 shadow-lg">
+                    <div id="chat-quick-phrases" className="absolute bottom-8 -left-20 z-20 max-h-72 w-80 max-w-[calc(100vw-3rem)] overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 shadow-lg sm:left-0">
                       {quickPhrases.length === 0 ? (
                         <p className="px-2 py-3 text-xs text-gray-500">
                           还没有快捷短语，可在「设置」中添加。
@@ -1064,14 +1090,16 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
                             key={phrase.id}
                             type="button"
                             onClick={() => insertPhrase(phrase)}
+                            disabled={sending || imageUploading}
                             className="block w-full rounded-md px-2 py-2 text-left hover:bg-[var(--surface-hover)]"
                           >
                             <span className="block text-xs font-semibold text-[var(--text)]">
                               [{phrase.category}] {phrase.title}
                             </span>
-                            <span className="mt-0.5 block truncate text-xs text-gray-500">
-                              {phrase.content}{phrase.image_ids?.length ? ` [${phrase.image_ids.length}张图片]` : ''}
-                            </span>
+                            {phrase.content && <span className="mt-1 block line-clamp-2 whitespace-pre-wrap break-words text-xs text-[var(--text-muted)]">{phrase.content}</span>}
+                            {!!phrase.image_ids?.length && <span className="mt-2 flex flex-wrap gap-2">
+                              {phrase.image_ids.map(id => <ReplyImage key={id} id={id} compact />)}
+                            </span>}
                           </button>
                         ))
                       )}
@@ -1087,6 +1115,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
               {showImagePicker && <div className="mb-3"><ReplyImagePicker key={destination} ids={draftImages} onChange={setDraftImages} disabled={sending} onBusy={setImageUploading} /></div>}
               <div className="flex items-end gap-2 sm:gap-3">
                 <textarea
+                  ref={composerRef}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={(event) => {
@@ -1098,7 +1127,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
                   rows={2}
                   placeholder={activeAccount?.connected ? '输入消息' : '账号离线，暂时无法发送'}
                   disabled={!activeAccount?.connected || sending}
-                  className="min-h-[56px] min-w-0 flex-1 resize-none border-0 bg-[var(--surface)] px-0 py-1 text-sm leading-6 text-[var(--text)] outline-none placeholder:text-[var(--text-soft)] disabled:bg-[var(--surface)] sm:min-h-[72px]"
+                  className="chat-composer-input min-h-[56px] min-w-0 flex-1 resize-none border-0 bg-[var(--surface)] px-0 py-1 text-sm leading-6 text-[var(--text)] outline-none placeholder:text-[var(--text-soft)] disabled:bg-[var(--surface)] sm:min-h-[72px]"
                 />
                 <button
                   type="button"
