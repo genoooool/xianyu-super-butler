@@ -246,6 +246,21 @@ export const getOrderRefundRecord = async (orderId: string): Promise<any> => {
 };
 
 // 快捷短语：人工客服常用话术
+export const getQuickPhraseGroups = async (): Promise<string[]> => {
+  try {
+    const setting = await get<{ value: string }>('/user-settings/quick_phrase_groups');
+    const groups: unknown = JSON.parse(setting.value);
+    if (!Array.isArray(groups) || !groups.every(value => typeof value === 'string' && value.trim() && value.length <= 80)) throw new Error('分组记录格式异常');
+    return [...new Set(groups)];
+  } catch (error) {
+    if ((error as { response?: { status?: number } }).response?.status === 404) return [];
+    throw error;
+  }
+};
+
+export const saveQuickPhraseGroups = (groups: string[]) =>
+  put('/user-settings/quick_phrase_groups', { value: JSON.stringify(groups), description: '快捷短语分组' });
+
 export const getQuickPhrases = async (includeDisabled = false): Promise<QuickPhrase[]> => {
   const res = await get<{ success: boolean; data: QuickPhrase[] }>(
     '/quick-phrases', { include_disabled: includeDisabled }

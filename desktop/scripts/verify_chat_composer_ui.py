@@ -38,6 +38,7 @@ def main():
     phrase.update(sort_order=0, enabled=True, use_count=0)
     stored = [phrase.copy()]
     mutations = []
+    saved_groups = []
     fail_next = [False]
     payloads = {
         '/verify': dict(authenticated=True, user_id=1, is_admin=False),
@@ -58,6 +59,10 @@ def main():
         if not url.startswith(base + '/'):
             request.abort(); return
         path = url[len(base):].split('?')[0]
+        if path == '/user-settings/quick_phrase_groups':
+            if request.request.method == 'PUT':
+                saved_groups[:] = json.loads(request.request.post_data_json['value'])
+            request.fulfill(json=dict(value=json.dumps(saved_groups))); return
         if path.startswith('/quick-phrases'):
             method = request.request.method
             if method == 'GET':
@@ -144,7 +149,15 @@ def main():
             expect(group.locator('[data-phrase-id]').first).to_have_attribute('data-phrase-id', '4')
             page.get_by_label('移动分组 短语 4', exact=True).select_option('售后')
             expect(page.get_by_role('region', name='分组 售后', exact=True).locator('[data-phrase-id]').last).to_have_attribute('data-phrase-id', '4')
-            page.get_by_label('短语分组', exact=True).fill('常用')
+            page.get_by_role('button', name='＋ 新建分组', exact=True).click()
+            page.get_by_label('分组名称', exact=True).fill('常用')
+            page.get_by_role('button', name='创建分组', exact=True).click()
+            expect(page.get_by_label('短语分组', exact=True)).to_have_value('常用')
+            assert '常用' in saved_groups
+            page.reload()
+            page.get_by_role('button', name='系统设置', exact=True).click()
+            page.get_by_role('tab', name='快捷短语', exact=True).click()
+            page.get_by_label('短语分组', exact=True).select_option('常用')
             page.get_by_label('短语标题', exact=True).fill('新分组短语')
             page.get_by_label('话术内容', exact=True).fill('保存后聊天可用')
             page.get_by_role('button', name='添加', exact=True).click()
