@@ -45,8 +45,7 @@ fn show_notification(
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = sound;
-        windows_notifications::show(&app.config().identifier, title, body, target)
+        windows_notifications::show(&app.config().identifier, title, body, sound, target)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {

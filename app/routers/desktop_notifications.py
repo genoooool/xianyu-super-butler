@@ -75,7 +75,7 @@ def create_desktop_notifications_router(hub, desktop_token, verify_token, settin
     @router.get("/status")
     def status(auth=Depends(session)):
         result = hub.status(auth[0]) if desktop_token else {"available": False, "active": False}
-        return {**result, "sound_available": bool(desktop_token and sys.platform == "darwin"),
+        return {**result, "sound_available": bool(desktop_token and sys.platform in ("darwin", "win32")),
                 "preference": saved_preference(auth[1]) if desktop_token else None}
 
     @router.post("/session")

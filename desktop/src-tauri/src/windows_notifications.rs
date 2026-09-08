@@ -25,9 +25,14 @@ pub fn take_click() -> Option<String> {
     CLICKS.lock().ok()?.pop_front()
 }
 
-pub fn show(identifier: &str, title: &str, body: &str, target: &str) -> Result<(), String> {
+pub fn show(identifier: &str, title: &str, body: &str, sound: bool, target: &str) -> Result<(), String> {
     let mut notification = Notification::new();
     notification.summary(title).body(body);
+    // notify-rust maps no sound name to an explicitly silent Windows toast.
+    // Let Windows apply its volume, app permission and Do Not Disturb settings.
+    if sound {
+        notification.sound_name("Default");
+    }
 
     // Match tauri-plugin-notification: development executables have no
     // installed AppUserModelID, while the NSIS install registers identifier.
@@ -89,5 +94,14 @@ mod tests {
         }
         assert_eq!(take_click().as_deref(), Some("1"));
         clear();
+    }
+
+    #[test]
+    #[ignore = "Shows two test notifications in the interactive Windows desktop"]
+    fn native_sound_and_silent_notifications() {
+        for (sound, label) in [(true, "有声测试"), (false, "静音测试")] {
+            super::show("com.genoooool.xianyuworkbench", "闲鱼工作台测试提醒", label, sound, "").unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
     }
 }

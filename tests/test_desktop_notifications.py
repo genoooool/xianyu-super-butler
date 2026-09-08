@@ -235,6 +235,8 @@ class DesktopNotificationRouteTests(unittest.TestCase):
         with patch("app.routers.desktop_notifications.sys.platform", "darwin"):
             self.assertTrue(self.client.get("/desktop/notifications/status", headers={"Authorization": "Bearer a"}).json()["sound_available"])
         with patch("app.routers.desktop_notifications.sys.platform", "win32"):
+            self.assertTrue(self.client.get("/desktop/notifications/status", headers={"Authorization": "Bearer a"}).json()["sound_available"])
+        with patch("app.routers.desktop_notifications.sys.platform", "linux"):
             self.assertFalse(self.client.get("/desktop/notifications/status", headers={"Authorization": "Bearer a"}).json()["sound_available"])
         response = self.client.post("/desktop/notifications/session", json={"enabled": True, "sound": True},
                                     headers={"Authorization": "Bearer a"})
