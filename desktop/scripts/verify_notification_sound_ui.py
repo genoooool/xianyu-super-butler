@@ -64,8 +64,11 @@ def run(args):
                         expect(sound).to_have_attribute('aria-checked', str(wanted).lower())
                         status = page.request.get(base + '/desktop/notifications/status', headers=auth).json()
                         assert status['sound_available'] and status['preference']['sound'] is wanted
-                        page.get_by_role('button', name='测试弹窗', exact=True).click()
-                        page.get_by_text('测试提醒已提交；是否弹出取决于系统通知权限和免打扰设置', exact=True).wait_for()
+                        # Queue once: repeated test clicks within five seconds
+                        # are intentionally refused by the notification hub.
+                        if not wanted:
+                            page.get_by_role('button', name='测试弹窗', exact=True).click()
+                            page.get_by_text('测试提醒已提交；是否弹出取决于系统通知权限和免打扰设置', exact=True).wait_for()
                         batch = page.request.get(base + '/desktop/notifications/poll', headers={'X-Xianyu-Desktop-Token': token}).json()
                         assert batch['test_count'] > 0 and batch['sound'] is wanted, batch
                     page.screenshot(path=str(work / 'sound-settings.png'))
