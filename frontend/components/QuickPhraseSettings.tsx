@@ -19,6 +19,9 @@ export default function QuickPhraseSettings() {
   const [savedGroups, setSavedGroups] = useState<string[]>([]);
   const [newGroup, setNewGroup] = useState<string | null>(null);
   const [groupError, setGroupError] = useState('');
+  const [editing, setEditing] = useState<QuickPhrase | null>(null);
+  const [editUploading, setEditUploading] = useState(false);
+  const [editError, setEditError] = useState('');
   const pointerDrag = useRef<{ id: number; x: number; y: number; active: boolean; target: HTMLElement | null } | null>(null);
   const categories = [...new Set(['默认', ...savedGroups, ...phrases.map(p => p.category)])];
   const visibleCategories = filter && categories.includes(filter) ? [filter] : categories;
@@ -65,6 +68,20 @@ export default function QuickPhraseSettings() {
     });
   };
   const disabled = busy || uploading || Boolean(error);
+  const saveEdit = async () => {
+    if (!editing || busyRef.current || editUploading) return;
+    busyRef.current = true; setBusy(true); setEditError('');
+    try {
+      const previous = phrases.find(phrase => phrase.id === editing.id);
+      await updateQuickPhrase(editing.id, {
+        title: editing.title.trim(), content: editing.content, image_ids: editing.image_ids || [],
+        category: editing.category,
+        ...(previous?.category !== editing.category ? { sort_order: appendOrder(editing.category) } : {}),
+      });
+      await load(); setFilter(editing.category); setEditing(null);
+    } catch (error) { setEditError(`保存未完成：${(error as Error).message}，编辑内容已保留，可重试。`); }
+    finally { busyRef.current = false; setBusy(false); }
+  };
   const createGroup = async () => {
     const name = newGroup?.trim();
     if (!name || busyRef.current) return;
@@ -117,6 +134,16 @@ export default function QuickPhraseSettings() {
         <div className="flex justify-end gap-2"><button type="button" disabled={busy} onClick={() => setNewGroup(null)} className="ios-btn-secondary px-4 py-2">取消</button><button type="submit" disabled={busy || !newGroup.trim()} className="ios-btn-primary px-4 py-2">创建分组</button></div>
       </form>
     </ReplyModal>}
+    {editing && <ReplyModal title="编辑快捷短语" busy={busy || editUploading} onClose={() => setEditing(null)}>
+      <form className="space-y-4" onSubmit={event => { event.preventDefault(); void saveEdit(); }}>
+        <label className="block text-sm">分组<select aria-label="编辑短语分组" value={editing.category} disabled={busy || editUploading} onChange={event => setEditing({ ...editing, category: event.target.value })} className="ios-input mt-2 w-full rounded-md px-3 py-2.5">{categories.map(category => <option key={category}>{category}</option>)}</select></label>
+        <label className="block text-sm">标题<input aria-label="编辑短语标题" value={editing.title} maxLength={80} disabled={busy || editUploading} onChange={event => setEditing({ ...editing, title: event.target.value })} className="ios-input mt-2 w-full rounded-md px-3 py-2.5" /></label>
+        <label className="block text-sm">话术内容<textarea aria-label="编辑话术内容" value={editing.content} maxLength={2000} rows={4} disabled={busy || editUploading} onChange={event => setEditing({ ...editing, content: event.target.value })} className="ios-input mt-2 w-full resize-y rounded-md px-3 py-2.5" /></label>
+        <ReplyImagePicker ids={editing.image_ids || []} onChange={image_ids => setEditing(current => current && { ...current, image_ids })} disabled={busy} onBusy={setEditUploading} />
+        {editError && <p role="alert" className="text-sm text-red-500">{editError}</p>}
+        <div className="flex justify-end gap-2"><button type="button" disabled={busy || editUploading} onClick={() => setEditing(null)} className="ios-btn-secondary px-4 py-2">取消</button><button type="submit" disabled={busy || editUploading || !editing.title.trim() || (!editing.content.trim() && !editing.image_ids?.length)} className="ios-btn-primary px-4 py-2">保存修改</button></div>
+      </form>
+    </ReplyModal>}
     <div className="px-4 pb-4"><ReplyImagePicker ids={form.image_ids} onChange={image_ids => setForm(current => ({ ...current, image_ids }))} disabled={disabled} onBusy={setUploading} /></div>
     <div className="flex flex-wrap gap-2 border-t border-[var(--border)] p-4" aria-label="筛选短语分组">
       {['', ...categories].map(category => <button key={category} type="button" aria-pressed={filter === category} onClick={() => setFilter(category)}
@@ -157,6 +184,7 @@ export default function QuickPhraseSettings() {
             <button type="button" aria-label={`上移 ${phrase.title}`} disabled={disabled || index === 0} onClick={() => move(phrase.id, category, rows[index - 1].id)} className="text-[var(--text-muted)] disabled:opacity-25"><ArrowUp size={15} /></button>
             <button type="button" aria-label={`下移 ${phrase.title}`} disabled={disabled || index === rows.length - 1} onClick={() => move(phrase.id, category, rows[index + 1].id)} className="text-[var(--text-muted)] disabled:opacity-25"><ArrowDown size={15} /></button>
             <EnabledBadge enabled={phrase.enabled} />
+            <button type="button" disabled={disabled} aria-label={`编辑 ${phrase.title}`} onClick={() => { setEditing({ ...phrase, image_ids: [...(phrase.image_ids || [])] }); setEditError(''); }} className="text-xs text-[var(--text)] hover:underline">编辑</button>
             <button type="button" disabled={disabled} onClick={() => void mutate(() => updateQuickPhrase(phrase.id, { enabled: !phrase.enabled }))} className="text-xs text-[var(--text-muted)] hover:underline">{phrase.enabled ? '停用' : '启用'}</button>
             <button type="button" disabled={disabled} onClick={() => void mutate(() => deleteQuickPhrase(phrase.id))} className="text-xs text-red-500 hover:underline">删除</button>
           </div>

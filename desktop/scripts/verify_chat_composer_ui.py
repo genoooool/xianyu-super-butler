@@ -167,6 +167,24 @@ def main():
             page.get_by_label('下移 短语 2', exact=True).click()
             expect(page.get_by_text('保存未完成：', exact=False)).to_be_visible()
             expect(group.locator('[data-phrase-id]').first).to_have_attribute('data-phrase-id', '2')
+            page.get_by_label('编辑 图片答复', exact=True).click()
+            editor = page.get_by_role('dialog', name='编辑快捷短语')
+            expect(editor.get_by_label('编辑短语标题')).to_have_value('图片答复')
+            editor.get_by_label('移除回复图片 1').click()
+            editor.get_by_role('button', name='取消', exact=True).click()
+            assert stored[0]['image_ids'] == ['fixture-image']
+            page.get_by_label('编辑 图片答复', exact=True).click()
+            editor.get_by_label('编辑短语标题').fill('已修改图片答复')
+            editor.get_by_label('编辑话术内容').fill('修改后的答复内容')
+            fail_next[0] = True
+            editor.get_by_role('button', name='保存修改', exact=True).click()
+            expect(editor.get_by_role('alert')).to_be_visible()
+            expect(editor.get_by_label('编辑话术内容')).to_have_value('修改后的答复内容')
+            editor.get_by_role('button', name='保存修改', exact=True).click()
+            expect(editor).to_have_count(0)
+            assert stored[0]['id'] == 1 and stored[0]['title'] == '已修改图片答复'
+            assert stored[0]['image_ids'] == ['fixture-image'] and stored[0]['enabled'] is True
+            page.get_by_label('筛选短语分组').get_by_role('button', name='全部').click()
             page.screenshot(path=str(args.output_dir / 'phrase-groups-settings.png'))
             page.get_by_role('button', name='消息中心', exact=True).click()
             trigger.click()
@@ -188,6 +206,7 @@ def main():
             browser.close()
         result = dict(status='passed', themes=['dark', 'light'], thumbnail_auth=True,
                       groups=True, drag_order_after_reload=True, cross_group_move=True, bounded_scroll=True,
+                      edit_cancel_preserves_images=True, edit_retry_preserves_draft=True, edit_keeps_id=True,
                       dismissal=['outside', 'escape', 'tab', 'selection', 'conversation'], send_requests=len(sends), errors=errors)
         (args.output_dir / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result))
