@@ -221,6 +221,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
   // 快捷短语：人工客服常用话术
   const [quickPhrases, setQuickPhrases] = useState<QuickPhrase[]>([]);
   const [showPhrases, setShowPhrases] = useState(false);
+  const [phraseGroup, setPhraseGroup] = useState('');
+  const phraseGroups = [...new Set(quickPhrases.map(phrase => phrase.category))];
+  const visiblePhrases = phraseGroup && phraseGroups.includes(phraseGroup)
+    ? quickPhrases.filter(phrase => phrase.category === phraseGroup) : quickPhrases;
   const phrasesRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { setShowPhrases(false); }, [destination, isActive]);
@@ -1079,15 +1083,21 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
                     <Zap className="h-5 w-5" />
                   </button>
                   {showPhrases && (
-                    <div id="chat-quick-phrases" className="absolute bottom-8 -left-20 z-20 max-h-72 w-80 max-w-[calc(100vw-3rem)] overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 shadow-lg sm:left-0">
+                    <div id="chat-quick-phrases" style={{ maxHeight: 'min(320px, 45vh)' }} className="absolute bottom-8 -left-20 z-20 flex w-80 max-w-[calc(100vw-3rem)] flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)] shadow-lg sm:left-0">
+                      {phraseGroups.length > 1 && <div className="subtle-scrollbar flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--border)] p-2" aria-label="聊天短语分组">
+                        {['', ...phraseGroups].map(category => <button type="button" key={category} aria-pressed={phraseGroup === category}
+                          onClick={() => setPhraseGroup(category)} className={`shrink-0 rounded-full px-2.5 py-1 text-xs ${phraseGroup === category ? 'bg-[var(--brand)] text-[var(--brand-ink)]' : 'text-[var(--text-muted)] hover:bg-[var(--surface-hover)]'}`}>{category || '全部'}</button>)}
+                      </div>}
+                      <div className="subtle-scrollbar min-h-0 overflow-y-auto overscroll-contain p-2">
                       {quickPhrases.length === 0 ? (
                         <p className="px-2 py-3 text-xs text-gray-500">
                           还没有快捷短语，可在「设置」中添加。
                         </p>
                       ) : (
-                        quickPhrases.map(phrase => (
+                        visiblePhrases.map(phrase => (
                           <button
                             key={phrase.id}
+                            data-quick-phrase-id={phrase.id}
                             type="button"
                             onClick={() => insertPhrase(phrase)}
                             disabled={sending || imageUploading}
@@ -1096,13 +1106,14 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
                             <span className="block text-xs font-semibold text-[var(--text)]">
                               [{phrase.category}] {phrase.title}
                             </span>
-                            {phrase.content && <span className="mt-1 block line-clamp-2 whitespace-pre-wrap break-words text-xs text-[var(--text-muted)]">{phrase.content}</span>}
+                            {phrase.content && <span className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-xs text-[var(--text-muted)]">{phrase.content}</span>}
                             {!!phrase.image_ids?.length && <span className="mt-2 flex flex-wrap gap-2">
                               {phrase.image_ids.map(id => <ReplyImage key={id} id={id} compact />)}
                             </span>}
                           </button>
                         ))
                       )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1112,7 +1123,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true, 
                   unavailable={replyControl.unavailable || Boolean(activeHandoff && activeHandoff.revision > (replyControl.state?.revision ?? 0))}
                   onToggle={() => void handleToggleReply()} />
               </div>
-              {showImagePicker && <div className="mb-3"><ReplyImagePicker key={destination} ids={draftImages} onChange={setDraftImages} disabled={sending} onBusy={setImageUploading} /></div>}
+              {showImagePicker && <div className="subtle-scrollbar mb-3 overflow-y-auto overscroll-contain" style={{ maxHeight: 'min(160px, 22vh)' }}><ReplyImagePicker key={destination} ids={draftImages} onChange={setDraftImages} disabled={sending} onBusy={setImageUploading} /></div>}
               <div className="flex items-end gap-2 sm:gap-3">
                 <textarea
                   ref={composerRef}

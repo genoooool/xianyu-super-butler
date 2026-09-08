@@ -3,6 +3,8 @@
 import argparse
 import io
 import json
+from email.parser import BytesParser
+from email.policy import default
 from pathlib import Path
 import socket
 import threading
@@ -33,9 +35,14 @@ def main():
     picture = io.BytesIO(); Image.new('RGB', (200, 120), '#e9c64c').save(picture, format='PNG')
     sends = []; images = []; errors = []
     phrase = dict(id=1, category='默认', title='图片答复', content='这里是图片内容说明', image_ids=['fixture-image'])
+    phrase.update(sort_order=0, enabled=True, use_count=0)
+    stored = [phrase.copy()]
+    mutations = []
+    fail_next = [False]
     payloads = {
         '/verify': dict(authenticated=True, user_id=1, is_admin=False),
         '/system-settings/public': dict(registration_enabled='false'),
+        '/system-settings': {},
         '/desktop/notifications/status': dict(available=False, active=False),
         '/desktop/credentials': dict(available=False, saved=False),
         '/cookies/details': [dict(id='a', nickname='测试店铺', enabled=False)],
@@ -51,6 +58,28 @@ def main():
         if not url.startswith(base + '/'):
             request.abort(); return
         path = url[len(base):].split('?')[0]
+        if path.startswith('/quick-phrases'):
+            method = request.request.method
+            if method == 'GET':
+                rows = sorted(stored, key=lambda row: (row['category'], row['sort_order'], row['id']))
+                request.fulfill(json=dict(success=True, data=rows)); return
+            if path.endswith('/use'):
+                request.fulfill(json=dict(success=True)); return
+            assert request.request.headers.get('authorization') == 'Bearer offline-test'
+            if fail_next[0]:
+                fail_next[0] = False
+                request.fulfill(status=503, json=dict(detail='模拟保存失败')); return
+            raw = b'Content-Type: ' + request.request.headers['content-type'].encode() + b'\r\n\r\n' + request.request.post_data_buffer
+            form = {part.get_param('name', header='content-disposition'): part.get_payload(decode=True).decode() for part in BytesParser(policy=default).parsebytes(raw).iter_parts()}
+            if 'sort_order' in form: form['sort_order'] = int(form['sort_order'])
+            if 'image_ids' in form: form['image_ids'] = json.loads(form['image_ids'])
+            if 'enabled' in form: form['enabled'] = form['enabled'] == 'true'
+            if method == 'PUT':
+                row = next(row for row in stored if row['id'] == int(path.rsplit('/', 1)[1])); row.update(form)
+            else:
+                stored.append(dict(id=max(row['id'] for row in stored) + 1, enabled=True, use_count=0, **form))
+            mutations.append(form)
+            request.fulfill(json=dict(success=True)); return
         if path.startswith('/chat/send/'):
             sends.append(path); request.fulfill(status=500, json={}); return
         if 'fixture-image' in path:
@@ -99,10 +128,53 @@ def main():
             page.set_viewport_size(dict(width=390, height=844))
             trigger.click(); expect(popup).to_be_visible()
             box = popup.bounding_box(); assert box['x'] >= 0 and box['x'] + box['width'] <= 390
+            # Persisted grouped order, real HTML drag events, and bounded scrolling.
+            page.keyboard.press('Escape'); page.set_viewport_size(dict(width=1440, height=1000))
+            stored.extend(dict(id=i, category='售前' if i < 14 else '售后', title=f'短语 {i}', content='内容 ' * 60,
+                               image_ids=[], sort_order=0, enabled=True, use_count=0) for i in range(2, 26))
+            page.get_by_role('button', name='系统设置', exact=True).click()
+            page.get_by_role('tab', name='快捷短语', exact=True).click()
+            group = page.get_by_role('region', name='分组 售前', exact=True)
+            expect(group.locator('[data-phrase-id]')).to_have_count(12)
+            page.get_by_label('拖动排序 短语 4', exact=True).drag_to(page.locator('[data-phrase-id="2"]'))
+            expect(group.locator('[data-phrase-id]').first).to_have_attribute('data-phrase-id', '4')
+            page.reload()
+            page.get_by_role('button', name='系统设置', exact=True).click()
+            page.get_by_role('tab', name='快捷短语', exact=True).click()
+            expect(group.locator('[data-phrase-id]').first).to_have_attribute('data-phrase-id', '4')
+            page.get_by_label('移动分组 短语 4', exact=True).select_option('售后')
+            expect(page.get_by_role('region', name='分组 售后', exact=True).locator('[data-phrase-id]').last).to_have_attribute('data-phrase-id', '4')
+            page.get_by_label('短语分组', exact=True).fill('常用')
+            page.get_by_label('短语标题', exact=True).fill('新分组短语')
+            page.get_by_label('话术内容', exact=True).fill('保存后聊天可用')
+            page.get_by_role('button', name='添加', exact=True).click()
+            expect(page.get_by_role('region', name='分组 常用', exact=True)).to_contain_text('新分组短语')
+            page.get_by_label('筛选短语分组').get_by_role('button', name='全部').click()
+            fail_next[0] = True
+            page.get_by_label('下移 短语 2', exact=True).click()
+            expect(page.get_by_text('保存未完成：', exact=False)).to_be_visible()
+            expect(group.locator('[data-phrase-id]').first).to_have_attribute('data-phrase-id', '2')
+            page.screenshot(path=str(args.output_dir / 'phrase-groups-settings.png'))
+            page.get_by_role('button', name='消息中心', exact=True).click()
+            trigger.click()
+            expect(popup.locator('[data-quick-phrase-id]')).to_have_count(26)
+            box = popup.bounding_box(); assert box['height'] <= 321
+            scroller = popup.locator('.overflow-y-auto')
+            assert scroller.evaluate('(el)=>el.scrollHeight > el.clientHeight')
+            scroller.evaluate('(el)=>el.scrollTop=el.scrollHeight')
+            assert scroller.evaluate('(el)=>el.scrollTop>0')
+            popup.get_by_role('button', name='售后', exact=True).click()
+            expect(popup.locator('[data-quick-phrase-id]').last).to_have_attribute('data-quick-phrase-id', '4')
+            popup.screenshot(path=str(args.output_dir / 'phrase-groups-chat.png'))
+            page.keyboard.press('Escape')
+            page.set_viewport_size(dict(width=390, height=844))
+            page.get_by_text('测试买家一', exact=True).first.click(); trigger.click()
+            box = popup.bounding_box(); assert box['height'] <= 321 and box['y'] >= 0
             assert images and all(value == 'Bearer offline-test' for value in images)
             assert not sends and not errors, (sends, errors)
             browser.close()
         result = dict(status='passed', themes=['dark', 'light'], thumbnail_auth=True,
+                      groups=True, drag_order_after_reload=True, cross_group_move=True, bounded_scroll=True,
                       dismissal=['outside', 'escape', 'tab', 'selection', 'conversation'], send_requests=len(sends), errors=errors)
         (args.output_dir / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result))

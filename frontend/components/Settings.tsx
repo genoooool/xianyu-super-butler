@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import DesktopNotificationSettings from './DesktopNotificationSettings';
 import SoftwareUpdate from './SoftwareUpdate';
-import { EnabledBadge, ReplyImage, ReplyImagePicker } from './ReplyMedia';
+import QuickPhraseSettings from './QuickPhraseSettings';
 import {
   Database,
   Eye,
@@ -20,15 +20,11 @@ import {
 
 import {
   changePassword,
-  createQuickPhrase,
-  deleteQuickPhrase,
-  getQuickPhrases,
   getSystemSettings,
-  updateQuickPhrase,
   updateSystemSettings,
 } from '../services/api';
 import { notify } from '../services/feedback';
-import { QuickPhrase, SystemSettings } from '../types';
+import { SystemSettings } from '../types';
 import {
   NoticeBanner,
   PageHeader,
@@ -98,40 +94,6 @@ const Settings: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSection>('general');
-  // 快捷短语：人工客服常用话术
-  const [phrases, setPhrases] = useState<QuickPhrase[]>([]);
-  const [phraseForm, setPhraseForm] = useState({ category: '默认', title: '', content: '', image_ids: [] as string[] });
-  const [phraseBusy, setPhraseBusy] = useState(false);
-  const [phraseUploading, setPhraseUploading] = useState(false);
-
-  const loadPhrases = () => {
-    getQuickPhrases(true).then(setPhrases).catch(() => setPhrases([]));
-  };
-
-  useEffect(() => { loadPhrases(); }, []);
-
-  const handleAddPhrase = async () => {
-    if (phraseBusy || phraseUploading || !phraseForm.title.trim() || (!phraseForm.content.trim() && !phraseForm.image_ids.length)) return;
-    setPhraseBusy(true);
-    try {
-      await createQuickPhrase(phraseForm.title.trim(), phraseForm.content, phraseForm.category.trim() || '默认', 0, phraseForm.image_ids);
-      setPhraseForm({ category: phraseForm.category, title: '', content: '', image_ids: [] });
-      loadPhrases();
-      notify('快捷短语已保存', 'success');
-    } catch (error) { notify((error as Error).message, 'error'); }
-    finally { setPhraseBusy(false); }
-  };
-
-  const handleTogglePhrase = async (phrase: QuickPhrase) => {
-    await updateQuickPhrase(phrase.id, { enabled: !phrase.enabled });
-    loadPhrases();
-  };
-
-  const handleDeletePhrase = async (id: number) => {
-    await deleteQuickPhrase(id);
-    loadPhrases();
-  };
-
   const [showApiKey, setShowApiKey] = useState(false);
   const [showSmtpPassword, setShowSmtpPassword] = useState(false);
 
@@ -481,76 +443,7 @@ const Settings: React.FC = () => {
 
       {activeSection === 'notice' && <SoftwareUpdate />}
 
-      {activeSection === 'phrases' && (
-        <section className="section-panel">
-          <SectionHeader
-            title="快捷短语"
-            description="文字、图片或图文组合，在消息管理页插入后确认发送。"
-            icon={Zap}
-          />
-          <div className="grid gap-3 p-4 sm:grid-cols-[140px_200px_1fr_auto]">
-            <input
-              value={phraseForm.category}
-              onChange={(e) => setPhraseForm({ ...phraseForm, category: e.target.value })}
-              placeholder="分类"
-              className="ios-input rounded-md px-3 py-2.5"
-            />
-            <input
-              value={phraseForm.title}
-              onChange={(e) => setPhraseForm({ ...phraseForm, title: e.target.value })}
-              placeholder="标题"
-              className="ios-input rounded-md px-3 py-2.5"
-            />
-            <input
-              value={phraseForm.content}
-              onChange={(e) => setPhraseForm({ ...phraseForm, content: e.target.value })}
-              placeholder="话术内容"
-              className="ios-input rounded-md px-3 py-2.5"
-            />
-            <button
-              type="button"
-              onClick={() => void handleAddPhrase()}
-              disabled={phraseBusy || phraseUploading || !phraseForm.title.trim() || (!phraseForm.content.trim() && !phraseForm.image_ids.length)}
-              className="ios-btn-primary rounded-md px-4 py-2.5 text-sm disabled:opacity-60"
-            >
-              添加
-            </button>
-          </div>
-          <div className="px-4 pb-4"><ReplyImagePicker ids={phraseForm.image_ids} onChange={image_ids => setPhraseForm(current => ({ ...current, image_ids }))} disabled={phraseBusy} onBusy={setPhraseUploading} /></div>
-          <div className="divide-y divide-gray-100 border-t border-gray-100">
-            {phrases.length === 0 ? (
-              <p className="px-4 py-6 text-center text-sm text-gray-500">还没有快捷短语</p>
-            ) : (
-              phrases.map((phrase) => (
-                <div key={phrase.id} className="flex items-center gap-3 px-4 py-3">
-                  <span className="w-20 shrink-0 text-xs text-gray-500">{phrase.category}</span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold text-gray-800">{phrase.title}</p>
-                    <p className="truncate text-xs text-gray-500">{phrase.content}</p>
-                    <div className="mt-2 flex gap-2">{phrase.image_ids?.map(id => <ReplyImage key={id} id={id} />)}</div>
-                  </div>
-                  <EnabledBadge enabled={phrase.enabled} />
-                  <span className="shrink-0 text-xs text-gray-400">用了 {phrase.use_count} 次</span>
-                  <button
-                    type="button"
-                    onClick={() => void handleTogglePhrase(phrase)}
-                    className="shrink-0 text-xs text-blue-600 hover:underline"
-                  >
-                    {phrase.enabled ? '停用' : '启用'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleDeletePhrase(phrase.id)}
-                    className="shrink-0 text-xs text-red-500 hover:underline"
-                  >
-                    删除
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-      )}
+      {activeSection === 'phrases' && <QuickPhraseSettings />}
 
       {activeSection === 'ai' && (
         <section className="section-panel">
