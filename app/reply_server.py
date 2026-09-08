@@ -2824,7 +2824,7 @@ async def generate_qr_code(current_user: Dict[str, Any] = Depends(get_current_us
     try:
         log_with_user('info', "请求生成扫码登录二维码", current_user)
 
-        result = await qr_login_manager.generate_qr_code()
+        result = await qr_login_manager.generate_qr_code(user_id=current_user['user_id'])
 
         if result['success']:
             log_with_user('info', f"扫码登录二维码生成成功: {result['session_id']}", current_user)
@@ -2836,6 +2836,15 @@ async def generate_qr_code(current_user: Dict[str, Any] = Depends(get_current_us
     except Exception as e:
         log_with_user('error', f"生成扫码登录二维码异常: {str(e)}", current_user)
         return {'success': False, 'message': f'生成二维码失败: {str(e)}'}
+
+
+@app.post("/qr-login/cancel/{session_id}")
+async def cancel_qr_code(session_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Close only the requesting user's browser owned by this QR session."""
+    result = await qr_login_manager.cancel_session(session_id, current_user['user_id'])
+    if result.get('status') == 'forbidden':
+        raise HTTPException(status_code=403, detail='无权关闭此扫码会话')
+    return result
 
 
 @app.get("/qr-login/check/{session_id}")

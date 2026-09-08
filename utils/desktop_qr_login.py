@@ -80,15 +80,22 @@ async def collect_verified_login(page, context, account):
 
 async def run_desktop_login(session, ready):
     """Own the browser from QR generation through completion, close on every exit."""
+    if session.cancel_requested:
+        ready.set()
+        return
     from playwright.async_api import async_playwright
 
     async def on_response(response):
+        if session.cancel_requested:
+            return
         parts = urlsplit(response.url)
         if parts.hostname != 'passport.goofish.com':
             return
         try:
             if parts.path == '/newlogin/qrcode/generate.do':
                 payload = await response.json()
+                if session.cancel_requested:
+                    return
                 code = payload.get('content', {}).get('data', {}).get('codeContent')
                 if not isinstance(code, str) or not code:
                     return
@@ -100,6 +107,8 @@ async def run_desktop_login(session, ready):
                 ready.set()
             elif parts.path == '/newlogin/qrcode/query.do':
                 payload = await response.json()
+                if session.cancel_requested:
+                    return
                 data = payload.get('content', {}).get('data', {})
                 if data.get('qrCodeStatus') in {'SCANED', 'SCANNED'}:
                     session.status = 'scanned'

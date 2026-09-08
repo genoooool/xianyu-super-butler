@@ -70,6 +70,9 @@ class QRLoginSession:
         self.message = None
         self.browser_verified = False
         self.long_login_enabled = False
+        self.user_id = None
+        self.cancel_lock = asyncio.Lock()
+        self.cancel_requested = False
 
     def extend_for_verification(self) -> None:
         """进入手机验证后延长会话寿命，只延一次。"""
@@ -98,6 +101,7 @@ class QRLoginManager:
 
     def __init__(self):
         self.sessions: Dict[str, QRLoginSession] = {}
+        self._session_tasks = {}
         self.headers = generate_headers()
         self.host = "https://passport.goofish.com"
         self.api_mini_login = f"{self.host}/mini_login.htm"
@@ -215,14 +219,15 @@ class QRLoginManager:
                 logger.error("获取登录参数时连接错误")
                 raise
     
-    async def generate_qr_code(self) -> Dict[str, Any]:
+    async def generate_qr_code(self, user_id=None) -> Dict[str, Any]:
         """生成二维码"""
         if os.getenv('XIANYU_DESKTOP', '').lower() in {'1', 'true', 'yes'}:
-            return await self._generate_desktop_qr_code()
+            return await self._generate_desktop_qr_code(user_id=user_id)
         try:
             # 创建新的会话
             session_id = str(uuid.uuid4())
             session = QRLoginSession(session_id)
+            session.user_id = user_id
 
             # 1. 获取m_h5_tk
             await self._get_mh5tk(session)
@@ -286,7 +291,7 @@ class QRLoginManager:
                     self.sessions[session_id] = session
 
                     # 启动状态检查任务
-                    asyncio.create_task(self._monitor_qr_status(session_id))
+                    self._track_session_task(session_id, self._monitor_qr_status(session_id))
 
                     logger.info(f"二维码生成成功: {session_id}")
                     return {
@@ -476,34 +481,76 @@ class QRLoginManager:
             # 留在内存里。留一段窗口期让前端取走最终状态，再删。
             asyncio.create_task(self._discard_session_later(session_id))
 
-    async def _generate_desktop_qr_code(self) -> Dict[str, Any]:
+    def _track_session_task(self, session_id, coroutine):
+        task = asyncio.create_task(coroutine)
+        self._session_tasks[session_id] = task
+        task.add_done_callback(lambda _: self._session_tasks.pop(session_id, None))
+        return task
+
+    async def cancel_session(self, session_id, user_id):
+        session = self.sessions.get(session_id)
+        if session is None:
+            return {'success': True, 'status': 'not_found'}
+        if session.user_id != user_id:
+            return {'success': False, 'status': 'forbidden'}
+        async with session.cancel_lock:
+            task = self._session_tasks.get(session_id)
+            # Do not interrupt cleanup a second time on repeated close requests.
+            # Completed authentication may already be getting saved by the server.
+            if session.status == 'success':
+                if task is not None:
+                    await asyncio.shield(task)
+                return {'success': True, 'status': 'success'}
+            session.status = 'cancelled'
+            session.cancel_requested = True
+            session.message = '扫码已取消，官网窗口已关闭。'
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            session.cookies.clear()
+            session.unb = None
+            self.sessions.pop(session_id, None)
+            return {'success': True, 'status': 'cancelled'}
+
+    async def _generate_desktop_qr_code(self, user_id=None) -> Dict[str, Any]:
         from utils.desktop_qr_login import run_desktop_login
 
         session = QRLoginSession(str(uuid.uuid4()))
+        session.user_id = user_id
+        session.status = 'loading'
+        session.message = '正在打开闲鱼官网，关闭本弹窗会同时关闭官网授权窗口。'
         self.sessions[session.session_id] = session
         ready = asyncio.Event()
 
         async def run():
+            login_task = asyncio.create_task(run_desktop_login(session, ready))
             try:
-                await run_desktop_login(session, ready)
+                await asyncio.wait_for(ready.wait(), timeout=25)
+                # Cancellation can race the readiness event inside wait_for.
+                # Keep the user's stop request separate from remote QR status.
+                if session.cancel_requested:
+                    login_task.cancel()
+                    await asyncio.gather(login_task, return_exceptions=True)
+                    session.status = 'cancelled'
+                    return
+                await login_task
+            except asyncio.TimeoutError:
+                login_task.cancel()
+                await asyncio.gather(login_task, return_exceptions=True)
+                session.status = 'error'
+                session.message = '官网二维码加载超时，请检查网络后重试。'
+            except asyncio.CancelledError:
+                login_task.cancel()
+                await asyncio.gather(login_task, return_exceptions=True)
+                session.status = 'cancelled'
+                raise
             finally:
                 asyncio.create_task(self._discard_session_later(session.session_id))
 
-        task = asyncio.create_task(run())
-        try:
-            await asyncio.wait_for(ready.wait(), timeout=25)
-            if session.qr_code_url and session.status not in {'error', 'cancelled'}:
-                return {'success': True, 'session_id': session.session_id,
-                        'qr_code_url': session.qr_code_url, 'message': session.message}
-        except asyncio.TimeoutError:
-            session.message = '官网二维码加载超时，请检查网络后重试。'
-        except asyncio.CancelledError:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            raise
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        return {'success': False, 'message': session.message or '官网二维码未加载，请重试。'}
+        self._track_session_task(session.session_id, run())
+        # Return a cancellable handle before Chromium starts or the QR loads.
+        return {'success': True, 'session_id': session.session_id,
+                'status': 'loading', 'message': session.message}
 
     async def _discard_session_later(self, session_id: str, delay: float = 60.0) -> None:
         """延迟丢弃会话，给前端留出读取最终状态的时间。"""

@@ -89,12 +89,16 @@ export const refreshAccountProfile = async (id: string): Promise<{ success: bool
   return post(`/cookies/${id}/refresh-profile`);
 };
 
-export const generateQRLogin = async (): Promise<{ success: boolean; session_id?: string; qr_code_url?: string; message?: string }> => {
+export const generateQRLogin = async (): Promise<{ success: boolean; session_id?: string; qr_code_url?: string; status?: string; message?: string }> => {
   return post('/qr-login/generate');
 };
 
 export const checkQRLoginStatus = async (sessionId: string): Promise<any> => {
   return get(`/qr-login/check/${sessionId}`);
+};
+
+export const cancelQRLogin = async (sessionId: string): Promise<any> => {
+  return post(`/qr-login/cancel/${sessionId}`);
 };
 
 export const updateAccountStatus = async (id: string, enabled: boolean): Promise<any> => {

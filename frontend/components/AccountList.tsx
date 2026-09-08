@@ -7,6 +7,7 @@ import {
   deleteAccount,
   generateQRLogin,
   checkQRLoginStatus,
+  cancelQRLogin,
   updateAccountRemark,
   updateAccountAutoConfirm,
   updateAccountCookie,
@@ -48,6 +49,22 @@ const AccountList: React.FC = () => {
   const [verificationUrl, setVerificationUrl] = useState<string>('');
   const qrPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qrSessionRef = useRef<string>('');
+  const qrAttemptRef = useRef(0);
+
+  function cancelQRSession(sessionId: string) {
+    if (sessionId) void cancelQRLogin(sessionId).catch(() => {
+      notify('官网窗口未能自动关闭，请手动关闭本次扫码窗口。', 'error');
+    });
+  }
+
+  function stopQRLogin() {
+    qrAttemptRef.current += 1;
+    const sessionId = qrSessionRef.current;
+    qrSessionRef.current = '';
+    if (qrPollTimerRef.current) clearTimeout(qrPollTimerRef.current);
+    qrPollTimerRef.current = null;
+    cancelQRSession(sessionId);
+  }
   const [activeModal, setActiveModal] = useState<ModalType>(null);
   const [editingAccount, setEditingAccount] = useState<AccountDetail | null>(null);
   const replyControl = useAccountReplyControl(activeModal === 'ai-settings' ? editingAccount?.id || '' : '');
@@ -149,8 +166,7 @@ const AccountList: React.FC = () => {
     return () => {
       clearInterval(timer);
       window.removeEventListener(ACCOUNT_REPLY_CHANGED, changed);
-      qrSessionRef.current = '';
-      if (qrPollTimerRef.current) clearTimeout(qrPollTimerRef.current);
+      stopQRLogin();
     };
   }, []);
 
@@ -430,18 +446,23 @@ const AccountList: React.FC = () => {
   };
 
   const startQRLogin = async () => {
-    qrSessionRef.current = '';
-    if (qrPollTimerRef.current) clearTimeout(qrPollTimerRef.current);
+    stopQRLogin();
+    const attempt = qrAttemptRef.current;
     setShowQRModal(true);
+    setQrCodeUrl('');
     setQrStatus('loading');
     setQrMessage('');
     setVerificationQrUrl('');
     setVerificationUrl('');
     try {
       const res = await generateQRLogin();
-      if (res.success && res.qr_code_url && res.session_id) {
-        setQrCodeUrl(res.qr_code_url);
-        setQrStatus('waiting');
+      if (qrAttemptRef.current !== attempt) {
+        if (res.session_id) cancelQRSession(res.session_id);
+        return;
+      }
+      if (res.success && res.session_id) {
+        setQrCodeUrl(res.qr_code_url || '');
+        setQrStatus(res.qr_code_url ? 'waiting' : 'loading');
         setQrMessage(res.message || '等待扫码');
         qrSessionRef.current = res.session_id;
 
@@ -460,7 +481,8 @@ const AccountList: React.FC = () => {
                 if (statusRes.long_login_enabled === false) {
                   notify(statusRes.message || '账号已登录，但平台未提供长期凭证');
                 }
-                setTimeout(() => {
+                qrPollTimerRef.current = setTimeout(() => {
+                  if (qrAttemptRef.current !== attempt) return;
                   setShowQRModal(false);
                   loadAccounts();
                 }, 1000);
@@ -472,7 +494,10 @@ const AccountList: React.FC = () => {
               return;
             }
 
-            if (statusRes.status === 'waiting') {
+            if (statusRes.status === 'loading') {
+              setQrStatus('loading');
+              setQrMessage(statusRes.message || '正在打开闲鱼官网…');
+            } else if (statusRes.status === 'waiting') {
               setQrStatus('waiting');
               setQrMessage(statusRes.message || '等待扫码');
             } else if (statusRes.status === 'scanned') {
@@ -510,7 +535,8 @@ const AccountList: React.FC = () => {
 
             qrPollTimerRef.current = setTimeout(pollStatus, 800);
           } catch (error) {
-            qrSessionRef.current = '';
+            if (qrSessionRef.current !== res.session_id) return;
+            stopQRLogin();
             setQrStatus('error');
             setQrMessage(error instanceof Error ? error.message : '扫码状态查询失败');
           }
@@ -522,14 +548,14 @@ const AccountList: React.FC = () => {
         setQrMessage(res.message || '二维码生成失败，请重试');
       }
     } catch (e) {
+      if (qrAttemptRef.current !== attempt) return;
       setQrStatus('error');
       setQrMessage(e instanceof Error ? e.message : '扫码登录请求失败');
     }
   };
 
   const closeQRModal = () => {
-    qrSessionRef.current = '';
-    if (qrPollTimerRef.current) clearTimeout(qrPollTimerRef.current);
+    stopQRLogin();
     setShowQRModal(false);
   };
 

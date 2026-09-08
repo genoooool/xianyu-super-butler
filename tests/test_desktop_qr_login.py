@@ -115,6 +115,74 @@ class DesktopQRTests(unittest.IsolatedAsyncioTestCase):
                 self.fail('Cancelled browser acquisition consumed its slot')
         playwright.chromium.launch.assert_not_called()
 
+    async def test_loading_returns_handle_and_close_waits_for_browser_cleanup(self):
+        manager = QRLoginManager()
+        started, closed = asyncio.Event(), asyncio.Event()
+        async def browser_flow(session, ready):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0.01)
+                closed.set()
+        with patch.object(desktop_qr_login, 'run_desktop_login', side_effect=browser_flow):
+            result = await manager._generate_desktop_qr_code(user_id=7)
+            self.assertEqual(result['status'], 'loading')
+            self.assertNotIn('qr_code_url', result)
+            await started.wait()
+            answers = await asyncio.gather(*[
+                manager.cancel_session(result['session_id'], 7) for _ in range(2)
+            ])
+        self.assertTrue(closed.is_set())
+        self.assertTrue(all(answer['success'] for answer in answers))
+        self.assertNotIn(result['session_id'], manager._session_tasks)
+        self.assertNotIn(result['session_id'], manager.sessions)
+        self.assertTrue((await manager.cancel_session(result['session_id'], 7))['success'])
+
+    async def test_immediate_close_prevents_browser_launch(self):
+        manager = QRLoginManager()
+        with patch.object(desktop_qr_login, 'run_desktop_login', new=AsyncMock()) as run:
+            result = await manager._generate_desktop_qr_code(user_id=7)
+            await manager.cancel_session(result['session_id'], 7)
+        run.assert_not_awaited()
+        self.assertNotIn(result['session_id'], manager.sessions)
+
+    async def test_cancel_does_not_close_other_users_or_other_sessions(self):
+        manager = QRLoginManager()
+        async def browser_flow(session, ready):
+            session.qr_code_url = 'data:image/png;base64,test'
+            session.status = 'waiting'
+            ready.set()
+            await asyncio.Event().wait()
+        with patch.object(desktop_qr_login, 'run_desktop_login', side_effect=browser_flow):
+            first = await manager._generate_desktop_qr_code(user_id=7)
+            second = await manager._generate_desktop_qr_code(user_id=8)
+            answer = await manager.cancel_session(first['session_id'], 8)
+            self.assertEqual(answer['status'], 'forbidden')
+            self.assertIn(first['session_id'], manager._session_tasks)
+            await manager.cancel_session(first['session_id'], 7)
+            self.assertIn(second['session_id'], manager._session_tasks)
+            await manager.cancel_session(second['session_id'], 8)
+
+    async def test_close_after_authentication_preserves_verified_result(self):
+        manager = QRLoginManager()
+        ready_to_close = asyncio.Event()
+        cleanup_done = asyncio.Event()
+        async def browser_flow(session, ready):
+            session.status = 'success'
+            session.cookies = {'unb': 'account-1', 'cookie2': 'test'}
+            session.unb = 'account-1'
+            ready.set()
+            ready_to_close.set()
+            await asyncio.sleep(0.01)
+            cleanup_done.set()
+        with patch.object(desktop_qr_login, 'run_desktop_login', side_effect=browser_flow):
+            result = await manager._generate_desktop_qr_code(user_id=7)
+            await ready_to_close.wait()
+            self.assertEqual((await manager.cancel_session(result['session_id'], 7))['status'], 'success')
+        self.assertTrue(cleanup_done.is_set())
+        self.assertEqual(manager.get_session_cookies(result['session_id'])['unb'], 'account-1')
+
 
 if __name__ == '__main__':
     unittest.main()

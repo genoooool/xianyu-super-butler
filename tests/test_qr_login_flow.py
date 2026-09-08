@@ -12,6 +12,20 @@ class QrLoginFlowTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         reply_server.qr_check_processed.clear()
 
+    async def test_cancel_endpoint_binds_requesting_owner(self):
+        with patch.object(reply_server.qr_login_manager, 'cancel_session', new=AsyncMock(
+                return_value={'success': True, 'status': 'cancelled'})) as cancel:
+            result = await reply_server.cancel_qr_code('session-1', {'user_id': 7})
+        cancel.assert_awaited_once_with('session-1', 7)
+        self.assertTrue(result['success'])
+
+    async def test_cancel_endpoint_rejects_wrong_owner(self):
+        with patch.object(reply_server.qr_login_manager, 'cancel_session', new=AsyncMock(
+                return_value={'success': False, 'status': 'forbidden'})):
+            with self.assertRaises(reply_server.HTTPException) as raised:
+                await reply_server.cancel_qr_code('session-1', {'user_id': 8})
+        self.assertEqual(raised.exception.status_code, 403)
+
     async def test_fast_persistence_returns_account_before_cookie_enhancement(self):
         manager = Mock()
         manager.add_cookie.return_value = None
