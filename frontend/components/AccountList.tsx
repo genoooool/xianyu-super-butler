@@ -18,6 +18,8 @@ import {
   refreshAccountProfile,
   getRiskControlStatus,
   startManualCaptchaSession,
+  getManualCaptchaMode,
+  cancelManualCaptchaSession,
   ACCOUNT_REPLY_CHANGED,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
@@ -76,6 +78,8 @@ const AccountList: React.FC = () => {
   const [captchaShot, setCaptchaShot] = useState('');
   const [captchaStage, setCaptchaStage] = useState<'starting' | 'ready' | 'done' | 'failed'>('starting');
   const [captchaMessage, setCaptchaMessage] = useState('');
+  const [nativeCaptcha, setNativeCaptcha] = useState<boolean | null>(null);
+  const captchaAttemptRef = useRef<{ accountId: string; id: string } | null>(null);
   const captchaWsRef = useRef<WebSocket | null>(null);
   const captchaImgRef = useRef<HTMLImageElement>(null);
   const [failedAvatars, setFailedAvatars] = useState<Set<string>>(new Set());
@@ -199,10 +203,28 @@ const AccountList: React.FC = () => {
     }
   };
 
-  // 人工滑块验证：在本页开弹窗，通过 WebSocket 把服务器端浏览器的截图推过来，
-  // 鼠标事件再回传驱动服务器上的真实浏览器 —— 相当于把远端浏览器镜像到这里。
-  // 这样部署在没有桌面的服务器上也能人工过验证，不需要访问服务器屏幕。
+  const closeManualCaptcha = () => {
+    const attempt = captchaAttemptRef.current;
+    captchaAttemptRef.current = null;
+    setCaptchaAccount(null);
+    if (attempt) void cancelManualCaptchaSession(attempt.accountId, attempt.id).catch(() => {
+      notify('验证窗口未能自动关闭，请手动关闭本次官网窗口。', 'error');
+    });
+  };
+
+  useEffect(() => () => {
+    const attempt = captchaAttemptRef.current;
+    captchaAttemptRef.current = null;
+    if (attempt) void cancelManualCaptchaSession(attempt.accountId, attempt.id).catch(() => {});
+  }, []);
+
+  // Desktop input stays in the owned website window. Server deployments retain
+  // the remote screen; mode is selected by the backend that owns the browser.
   const handleManualCaptcha = async (account: AccountDetail) => {
+    if (captchaAttemptRef.current) return;
+    const attempt = { accountId: account.id, id: crypto.randomUUID() };
+    captchaAttemptRef.current = attempt;
+    setNativeCaptcha(null);
     setCaptchaAccount(account);
     setCaptchaShot('');
     setCaptchaStage('starting');
@@ -210,27 +232,35 @@ const AccountList: React.FC = () => {
     setManualCaptchaId(account.id);
 
     try {
-      const result = await startManualCaptchaSession(account.id);
+      const mode = await getManualCaptchaMode();
+      if (captchaAttemptRef.current !== attempt) return;
+      setNativeCaptcha(mode.native);
+      if (mode.native) setCaptchaMessage('请在即将打开的官网窗口中完成验证，成功保存后会自动关闭。');
+      const result = await startManualCaptchaSession(account.id, 300, attempt.id);
+      if (captchaAttemptRef.current !== attempt) return;
       if (!result.success) throw new Error(result.message || '人工验证未完成');
       setCaptchaStage('done');
       setCaptchaMessage(result.message || '验证完成，账号 Cookie 已更新');
       notify(result.message || '人工验证完成，账号 Cookie 已更新', 'success');
+      setCaptchaAccount(null);
       const status = await getRiskControlStatus();
       setRiskBlocked((status.accounts || []).filter(item => item.blocked || (item.verification_type && item.verification_type !== 'none')));
       await loadAccounts({ silent: true });
     } catch (error) {
+      if (captchaAttemptRef.current !== attempt) return;
       const msg = error instanceof Error ? error.message : '人工验证启动失败';
       setCaptchaStage('failed');
       setCaptchaMessage(msg);
       notify(msg, 'error');
     } finally {
+      if (captchaAttemptRef.current === attempt) captchaAttemptRef.current = null;
       setManualCaptchaId(null);
     }
   };
 
   // 弹窗打开后连上服务器端会话，持续接收截图；关闭时断开
   useEffect(() => {
-    if (!captchaAccount) {
+    if (!captchaAccount || nativeCaptcha !== false) {
       captchaWsRef.current?.close();
       captchaWsRef.current = null;
       return;
@@ -292,7 +322,7 @@ const AccountList: React.FC = () => {
       captchaWsRef.current?.close();
       captchaWsRef.current = null;
     };
-  }, [captchaAccount]);
+  }, [captchaAccount, nativeCaptcha]);
 
   // 把本页的鼠标坐标换算成服务器端浏览器的坐标后回传
   const sendCaptchaMouse = (eventType: 'down' | 'move' | 'up', e: React.MouseEvent) => {
@@ -696,7 +726,7 @@ const AccountList: React.FC = () => {
                     disabled={manualCaptchaId !== null || !blockedState}
                     className={`flex items-center gap-1.5 rounded-md px-2.5 py-2 text-xs font-bold disabled:cursor-not-allowed disabled:opacity-40 ${blockedState ? 'bg-amber-100 text-amber-800 hover:bg-amber-200' : 'text-gray-400'}`}
                     title={blockedState
-                      ? '账号被闲鱼要求人机验证，点此在页面内手动拖动滑块解除'
+                      ? '打开人工验证，按官网提示完成操作'
                       : '账号当前不在风控状态，无需人工验证'}
                     aria-label={blockedState ? '人工滑块验证' : '账号未处于风控，无需验证'}
                 >
@@ -1156,7 +1186,7 @@ const AccountList: React.FC = () => {
               </div>
               <button
                 type="button"
-                onClick={() => setCaptchaAccount(null)}
+                onClick={closeManualCaptcha}
                 className="rounded-md p-2 hover:bg-gray-100"
                 aria-label="关闭"
               >
@@ -1166,14 +1196,14 @@ const AccountList: React.FC = () => {
 
             <div className="modal-body space-y-4">
               <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs leading-relaxed text-blue-800">
-                <p className="font-bold">这是什么？</p>
+                <p className="font-bold">{nativeCaptcha ? '在官网窗口直接操作' : '完成人工验证'}</p>
                 <p className="mt-1">
-                  闲鱼要求人机验证时，系统会自动尝试滑动，但成功率有限。此处把
-                  <b>服务器上浏览器的画面实时投屏</b>到这里，你用鼠标拖动，
-                  操作会回传到服务器驱动真实浏览器 —— 因此部署在无桌面的服务器上也能用。
+                  {nativeCaptcha
+                    ? '请在专用浏览器中按官网提示操作。关闭此弹窗会一并关闭本次官网窗口。'
+                    : '请按验证页面提示完成操作。关闭后保留原授权，账号继续等待人工验证。'}
                 </p>
                 <p className="mt-1">
-                  验证通过后系统会自动回收新的登录凭证，账号立即恢复运行。
+                  验证通过并成功保存授权后，窗口自动关闭，账号恢复连接。
                 </p>
               </div>
 
@@ -1187,7 +1217,7 @@ const AccountList: React.FC = () => {
                 {captchaMessage || '正在准备…'}
               </div>
 
-              <div className="flex min-h-[320px] items-center justify-center rounded-md border-2 border-dashed border-gray-200 bg-gray-50 p-2">
+              {nativeCaptcha === false && <div className="flex min-h-[320px] items-center justify-center rounded-md border-2 border-dashed border-gray-200 bg-gray-50 p-2">
                 {captchaShot ? (
                   <img
                     ref={captchaImgRef}
@@ -1209,18 +1239,18 @@ const AccountList: React.FC = () => {
                     </p>
                   </div>
                 )}
-              </div>
+              </div>}
 
-              <p className="text-xs text-gray-500">
+              {nativeCaptcha === false && <p className="text-xs text-gray-500">
                 操作方式：在上方画面的滑块按钮上 <b>按住鼠标左键</b>，
                 <b>向右拖到底</b> 后松开。画面会随你的操作实时刷新。
-              </p>
+              </p>}
             </div>
 
             <div className="modal-footer flex justify-end">
               <button
                 type="button"
-                onClick={() => setCaptchaAccount(null)}
+                onClick={closeManualCaptcha}
                 className="ios-btn-secondary rounded-md px-4 py-2 text-sm"
               >
                 关闭

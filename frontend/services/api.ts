@@ -353,6 +353,7 @@ export const requestFreshCaptchaUrl = async (cookieId: string): Promise<{
 export const startManualCaptchaSession = async (
   cookieId: string,
   timeout: number = 300,
+  attemptId: string = '',
 ): Promise<{
   success: boolean;
   message: string;
@@ -361,7 +362,17 @@ export const startManualCaptchaSession = async (
   const formData = new FormData();
   formData.append('cookie_id', cookieId);
   formData.append('timeout', String(timeout));
-  return post('/api/captcha/manual-session', formData, { timeout: (timeout + 30) * 1000 });
+  formData.append('attempt_id', attemptId);
+  return post('/api/captcha/manual-session', formData, { timeout: (timeout + 120) * 1000 });
+};
+
+export const getManualCaptchaMode = () => get<{ native: boolean }>('/api/captcha/manual-mode');
+
+export const cancelManualCaptchaSession = (cookieId: string, attemptId: string) => {
+  const formData = new FormData();
+  formData.append('cookie_id', cookieId);
+  formData.append('attempt_id', attemptId);
+  return post('/api/captcha/manual-session/cancel', formData);
 };
 
 // 商品擦亮：重新获取搜索曝光，平台对每日次数有限制

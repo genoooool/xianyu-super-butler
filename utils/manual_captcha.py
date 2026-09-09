@@ -1,20 +1,15 @@
-"""人工完成滑块验证。
+"""User-operated verification with one owned browser per account.
 
-实测发现自动识别已经能把滑块拖到目标位置（误差 0.3px 以内），但服务端仍
-判定失败 —— 拦的是行为特征而不是位置精度，因此继续加大自动重试不会有结果。
-
-项目里本来就有远程控制通道（``utils.captcha_remote_control`` 负责推屏和
-转发鼠标事件，``static/captcha_control.html`` 是操作页面），但一直没有代码
-调用它。这个模块把它接起来：打开登录页，等人在浏览器里完成验证，然后取回
-新的 Cookie。
-
-与 ``utils.xianyu_slider_stealth`` 的区别是那边用同步 Playwright，无法和
-异步的远程通道共享 page 对象，所以这里独立起一个异步浏览器。
+Desktop builds show the real page; server deployments stream the page. The
+browser stays alive through the caller's authentication and conditional save.
+No automatic CAPTCHA solver or automatic retry is used by this flow.
 """
 
 import asyncio
+import os
 import time
-from typing import Any, Dict, Optional
+from collections import deque
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from loguru import logger
 from utils import browser_limit
@@ -27,6 +22,31 @@ DEFAULT_TIMEOUT = 300
 # 等待滑块真正出现的最长时间（秒）。惩罚页加载本身就要几秒，
 # 等不到说明 x5secdata 已失效或该账号当前已不在风控状态。
 CAPTCHA_PRESENT_TIMEOUT = 20
+
+# One owner-scoped attempt per account. Cancellation also covers a close that
+# arrives just before the start request; an old close never cancels a new attempt.
+_manual_tasks = {}
+_cancelled_attempts = deque(maxlen=128)
+
+
+def native_verification_enabled() -> bool:
+    return os.getenv('XIANYU_DESKTOP', '').lower() in {'1', 'true', 'yes'}
+
+
+def has_manual_session(cookie_id: str) -> bool:
+    return cookie_id in _manual_tasks
+
+
+def cancel_manual_session(cookie_id: str, attempt_id: str, owner: int) -> None:
+    key = (cookie_id, attempt_id, owner)
+    _cancelled_attempts.append((key, time.monotonic()))
+    active = _manual_tasks.get(cookie_id)
+    if active and active[0] == key and not active[1].cancelling():
+        active[1].cancel()
+
+
+def _attempt_cancelled(key) -> bool:
+    return any(saved == key and time.monotonic() - at < 600 for saved, at in _cancelled_attempts)
 
 
 def get_verification_url(cookie_id: str) -> Optional[str]:
@@ -149,12 +169,17 @@ async def open_manual_session(
     cookies_str: str,
     timeout: int = DEFAULT_TIMEOUT,
     headless: bool = True,
+    *,
+    attempt_id: str = '',
+    owner: int = 0,
+    finalize: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
 ) -> Dict[str, Any]:
     """打开一个人工验证会话，等待人在浏览器里完成滑块。
 
     Args:
         timeout: 等待人工操作的秒数，超时后放弃并关闭浏览器。
         headless: 默认无头 —— 页面通过远程通道推给用户，不需要本地窗口。
+        finalize: 页面完成后认证并保存授权；成功或失败后统一关闭本次浏览器。
 
     Returns:
         ``{"success": bool, "cookies_str": str, "message": str, "session_id": str}``。
@@ -172,10 +197,23 @@ async def open_manual_session(
         "session_id": session_id,
     }
 
+    key = (cookie_id, attempt_id, owner)
+    if _attempt_cancelled(key):
+        return {**result, 'message': '已取消人工验证，原授权和等待状态已保留'}
+    if cookie_id in _manual_tasks:
+        return {**result, 'message': '该账号已有人工验证窗口，请先完成或关闭它'}
+    task = asyncio.current_task()
+    _manual_tasks[cookie_id] = (key, task)
     playwright = None
     browser = None
     context = None
     refresh_task = None
+    finalizing = False
+    closing = False
+    def browser_closed(*_):
+        if not closing and not task.cancelling():
+            task.cancel()
+
     try:
         playwright = await async_playwright().start()
         browser = await browser_limit.launch_browser(
@@ -185,27 +223,21 @@ async def open_manual_session(
              # chromium_headless_shell，缺失时报 Executable doesn't exist，
              # 人工验证页面就会卡在「正在服务器上打开验证页面」。
              'channel': 'chromium',
-             'args': [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-            ]},
+             },
             "人工验证码",
         )
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/138.0.0.0 Safari/537.36"
-            ),
         )
 
         if cookies_str:
             await context.add_cookies(_to_playwright_cookies(cookies_str))
 
         page = await context.new_page()
+        page.on('close', browser_closed)
+        browser.on('disconnected', browser_closed)
+        if not headless:
+            await page.bring_to_front()
 
         # 惩罚页 URL 优先：只有导航到它才会弹出滑块。
         # 原实现导航到闲鱼首页，首页没有滑块 → check_completion 立刻误判
@@ -234,20 +266,26 @@ async def open_manual_session(
         if not captcha_appeared:
             result["message"] = (
                 "已导航到惩罚页但未检测到滑块（x5secdata 可能已过期），"
-                "请让账号重新触发风控后重试"
+                "本次验证未完成，原授权已保留，请稍后手动重试"
             )
             logger.warning(f"【{cookie_id}】{result['message']}")
             return result
 
-        await captcha_controller.create_session(session_id, page)
-        # 持续推送截图，让用户能看到自己的拖动效果
-        refresh_task = asyncio.create_task(
-            captcha_controller.auto_refresh_screenshot(session_id, interval=1.0)
-        )
+        if headless:
+            await captcha_controller.create_session(session_id, page)
+            refresh_task = asyncio.create_task(
+                captcha_controller.auto_refresh_screenshot(session_id, interval=1.0)
+            )
+        else:
+            # Native input goes directly to the page, with no screenshots or
+            # forwarded mouse events competing with the user's drag.
+            captcha_controller.active_sessions[session_id] = {
+                'page': page, 'completed': False, 'native': True,
+            }
 
         logger.warning(
             f"【{cookie_id}】已开启人工验证会话，请在 {timeout} 秒内于"
-            f" /static/captcha_control.html?session={session_id} 完成验证"
+            f"{'工作台画面' if headless else '专用官网窗口'}完成人工验证"
         )
 
         # 关键：会话期间浏览器必须保持存活，等用户拖完才返回。
@@ -257,6 +295,9 @@ async def open_manual_session(
         completed = False
         while time.monotonic() < deadline:
             await asyncio.sleep(2)
+            if page.is_closed() or not browser.is_connected():
+                result['message'] = '验证窗口已关闭，原授权和等待状态已保留'
+                return result
             try:
                 if await captcha_controller.check_completion(session_id):
                     completed = True
@@ -277,15 +318,27 @@ async def open_manual_session(
         result["success"] = True
         result["cookies_str"] = new_cookies
         result["message"] = "人工验证完成"
+        if finalize is not None:
+            finalizing = True
+            await finalize(result)
+            result['message'] = '验证已通过并保存，官网窗口已关闭，账号正在恢复连接'
         logger.info(f"【{cookie_id}】人工验证完成，已取得新 Cookie")
         return result
+    except asyncio.CancelledError:
+        result['success'] = False
+        result['message'] = '已取消人工验证，原授权和等待状态已保留'
+        return result
     except Exception as exc:
-        result["message"] = f"人工验证会话异常: {exc}"
+        if finalizing:
+            raise
+        result["message"] = f"人工验证页面未能完成（{type(exc).__name__}），原授权已保留"
         logger.error(f"【{cookie_id}】{result['message']}")
         return result
     finally:
+        closing = True
         if refresh_task and not refresh_task.done():
             refresh_task.cancel()
+            await asyncio.gather(refresh_task, return_exceptions=True)
         try:
             from utils.captcha_remote_control import captcha_controller
 
@@ -303,6 +356,8 @@ async def open_manual_session(
                 await playwright.stop()
             except Exception:
                 pass
+        if _manual_tasks.get(cookie_id) == (key, task):
+            _manual_tasks.pop(cookie_id, None)
 
 
 async def _wait_for_captcha_present(page, timeout: int = CAPTCHA_PRESENT_TIMEOUT) -> bool:

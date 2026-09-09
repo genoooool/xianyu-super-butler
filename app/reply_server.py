@@ -9082,27 +9082,57 @@ def use_quick_phrase(
     return {'success': QuickPhrases(db_manager).use(current_user['user_id'], phrase_id)}
 
 
+@app.get('/api/captcha/manual-mode')
+async def get_manual_captcha_mode(current_user: Dict[str, Any] = Depends(get_current_user)):
+    from utils.manual_captcha import native_verification_enabled
+    return {'native': native_verification_enabled()}
+
+
+@app.post('/api/captcha/manual-session/cancel')
+async def cancel_manual_captcha(
+    cookie_id: str = Form(...), attempt_id: str = Form(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    import uuid
+    from utils.manual_captcha import cancel_manual_session
+    if cookie_id not in db_manager.get_all_cookies(current_user['user_id']):
+        raise HTTPException(404, '账号不存在或无权访问')
+    try:
+        attempt_id = str(uuid.UUID(attempt_id))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(400, '无效的验证会话')
+    cancel_manual_session(cookie_id, attempt_id, current_user['user_id'])
+    return {'success': True}
+
+
 @app.post('/api/captcha/manual-session')
 async def start_manual_captcha(
     cookie_id: str = Form(...),
     timeout: int = Form(300),
-    current_user: Dict[str, Any] = Depends(get_current_user)
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    attempt_id: str = Form(''),
 ):
     """开启人工验证会话。
 
-    自动识别虽然能把滑块拖到目标位置，但服务端拦的是行为特征，重试再多次也
-    不会通过。这里把滑块画面推到前端弹窗，用户手动完成后取回新 Cookie。
+    桌面版直接打开专用官网窗口；服务器版保留远程画面。
+    用户完成验证后，认证并保存授权，再关闭本次浏览器。
 
     只有账号处于风控状态时才允许调用 —— 非风控时闲鱼不会下发惩罚页，
     开会话只会白等一场，还可能因为多余请求把账号推向风控。
     """
     from app.db_manager import db_manager
-    from utils.manual_captcha import open_manual_session
+    from utils.manual_captcha import open_manual_session, native_verification_enabled, has_manual_session
     from utils import risk_control
 
     user_cookies = db_manager.get_all_cookies(current_user['user_id'])
     if cookie_id not in user_cookies:
         raise HTTPException(status_code=404, detail="账号不存在或无权访问")
+
+    import uuid
+    try:
+        attempt_id = str(uuid.UUID(attempt_id)) if attempt_id else str(uuid.uuid4())
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(400, '无效的验证会话')
 
     guard = risk_control.registry.get(cookie_id)
     if not guard.is_blocked:
@@ -9121,16 +9151,7 @@ async def start_manual_captcha(
             _instance.manual_captcha_in_progress = True
             log_with_user('info', f"账号 {cookie_id} 已暂停自动验证，等待人工完成", current_user)
 
-    try:
-        timeout = max(60, min(int(timeout or 300), 900))
-        result = await open_manual_session(
-            cookie_id, user_cookies[cookie_id], timeout=timeout
-        )
-    finally:
-        if _instance is not None:
-            _instance.manual_captcha_in_progress = False
-
-    if result['success']:
+    async def finalize(result):
         # 拿到 x5sec 后必须清掉 x5secdata 等挑战标记，否则闲鱼会认为验证仍未完成，
         # 继续返回 FAIL_SYS_USER_VALIDATE —— 表现为"滑块过了但账号还是用不了"
         from utils.xianyu_utils import drop_stale_captcha_challenge
@@ -9185,6 +9206,19 @@ async def start_manual_captcha(
         except Exception as exc:
             log_with_user('warning', f"重置风控状态失败: {exc}", current_user)
         log_with_user('info', f"账号 {cookie_id} 人工验证完成，已更新 Cookie", current_user)
+
+
+    try:
+        timeout = max(60, min(int(timeout or 300), 900))
+        async with asyncio.timeout(timeout + 90):
+            result = await open_manual_session(
+                cookie_id, user_cookies[cookie_id], timeout=timeout,
+                headless=not native_verification_enabled(),
+                attempt_id=attempt_id, owner=current_user['user_id'], finalize=finalize,
+            )
+    finally:
+        if _instance is not None:
+            _instance.manual_captcha_in_progress = has_manual_session(cookie_id)
 
     return JSONResponse({
         'success': result['success'],

@@ -91,14 +91,18 @@ class ManualVerificationReceiptTests(unittest.IsolatedAsyncioTestCase):
             'unb=123; cookie2=verified; havana_lgc2_77=long', 'verified-token'))
         result = {'success': True, 'message': 'completed', 'session_id': 'test',
                   'cookies_str': f'unb={456 if other_account else 123}; x5sec=manual'}
+        async def complete(*args, finalize, **kwargs):
+            self.assertTrue(instance.manual_captcha_in_progress)
+            await finalize(result)
+            return result
         with (patch.object(reply_server, 'db_manager', db),
               patch('app.db_manager.db_manager', db),
               patch.object(reply_server.cookie_manager, 'manager', manager),
               patch.object(risk_control, 'registry', registry),
-              patch('utils.manual_captcha.open_manual_session', new=AsyncMock(return_value=result)),
+              patch('utils.manual_captcha.open_manual_session', side_effect=complete),
               patch('utils.platform_session.PlatformSession', return_value=session)):
             try:
-                await reply_server.start_manual_captcha('a', 300, {'user_id': 7, 'username': 'test'})
+                await reply_server.start_manual_captcha('a', 300, {'user_id': 7, 'username': 'test'}, '')
                 error = None
             except Exception as exc:
                 error = exc

@@ -66,6 +66,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
         if session_id in captcha_controller.active_sessions:
             session_data = captcha_controller.active_sessions[session_id]
+            if session_data.get('native'):
+                await websocket.close()
+                return
             await websocket.send_json({
                 'type': 'session_info',
                 'screenshot': session_data['screenshot'],

@@ -206,6 +206,8 @@ class CaptchaRemoteController:
         Returns:
             是否成功
         """
+        if self.active_sessions.get(session_id, {}).get('native'):
+            return False
         if session_id not in self.active_sessions:
             logger.warning(f"会话不存在: {session_id}")
             return False
@@ -364,4 +366,3 @@ class CaptchaRemoteController:
 
 # 全局实例
 captcha_controller = CaptchaRemoteController()
-
