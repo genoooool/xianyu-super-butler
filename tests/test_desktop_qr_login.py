@@ -2,11 +2,12 @@ import asyncio
 import threading
 import time
 import unittest
+import httpx
 from unittest.mock import AsyncMock, Mock, patch
 
 from utils import browser_limit, desktop_qr_login
 from utils.platform_session import RenewalResult, marshal_cookies
-from utils.qr_login import QRLoginManager
+from utils.qr_login import QRLoginManager, QRLoginSession
 
 
 class DesktopQRTests(unittest.IsolatedAsyncioTestCase):
@@ -77,7 +78,49 @@ class DesktopQRTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, 'account changed'):
                 await desktop_qr_login.collect_verified_login(page, context, 'different-account')
             platform.verify_token.return_value = RenewalResult('expired')
-            with self.assertRaisesRegex(ValueError, 'authentication incomplete'):
+            with self.assertRaisesRegex(ValueError, 'im_expired'):
+                await desktop_qr_login.collect_verified_login(page, context, 'account-1')
+
+    async def test_pending_im_verification_preserves_scanned_browser_until_cancel(self):
+        page, context, _, _ = self.fixture()
+        page.frames = []
+        page.is_closed.return_value = False
+        page.goto = page.bring_to_front = AsyncMock()
+        modal = Mock(is_visible=AsyncMock(return_value=False))
+        avatar = Mock(is_visible=AsyncMock(return_value=True))
+        page.locator.side_effect = lambda selector: modal if 'login-modal-wrap' in selector else Mock(first=avatar)
+        page.get_by_text.return_value.filter.return_value.click = AsyncMock()
+        context.new_page = AsyncMock(return_value=page)
+        browser = Mock(new_context=AsyncMock(return_value=context), close=AsyncMock())
+        playwright = Mock(__aenter__=AsyncMock(), __aexit__=AsyncMock(return_value=False))
+        called = asyncio.Event()
+        async def pending(*_):
+            called.set()
+            raise desktop_qr_login.LoginPending('im_verification_required')
+        session = QRLoginSession('pending-test')
+        with (patch('playwright.async_api.async_playwright', return_value=playwright),
+              patch.object(browser_limit, 'launch_browser', new=AsyncMock(return_value=browser)),
+              patch.object(desktop_qr_login, 'collect_verified_login', side_effect=pending) as collect):
+            task = asyncio.create_task(desktop_qr_login.run_desktop_login(session, asyncio.Event()))
+            await asyncio.wait_for(called.wait(), 1)
+            await asyncio.sleep(0.55)
+            self.assertFalse(task.done())
+            self.assertEqual(session.status, 'processing')
+            self.assertEqual(session.unb, 'account-1')
+            self.assertFalse(session.browser_verified)
+            browser.close.assert_not_awaited()
+            collect.assert_awaited_once()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        browser.close.assert_awaited_once()
+
+    async def test_network_error_keeps_scan_recoverable(self):
+        page, context, platform, _ = self.fixture()
+        platform.verify_token.side_effect = httpx.ReadTimeout('request timeout')
+        with (patch.object(desktop_qr_login, 'login_settings', new=AsyncMock(return_value={'hasLongTokenLogin': True})),
+              patch.object(desktop_qr_login, 'PlatformSession', return_value=platform)):
+            with self.assertRaisesRegex(desktop_qr_login.LoginPending, 'im_transient'):
                 await desktop_qr_login.collect_verified_login(page, context, 'account-1')
 
     def test_only_unexpired_first_party_cookies_are_collected(self):
