@@ -209,25 +209,39 @@ class RenewalIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def subject(self, names):
         return extract_methods('XianyuAutoAsync.py', 'XianyuLive', names, {'asyncio': asyncio, 'logger': Mock(), 'time': time})()
 
-    async def test_concurrent_renewals_serialize(self):
+    async def test_concurrent_renewals_share_the_successful_result(self):
         subject = self.subject({'refresh_token'})
         subject.cookie_refresh_lock = asyncio.Lock()
+        subject._authorization_paused = AsyncMock(return_value=False)
+        subject.current_token = None
+        subject.last_token_refresh_time = 0
         running = 0
         peak = 0
+        calls = 0
         async def refresh(_):
-            nonlocal running, peak
+            nonlocal running, peak, calls
+            calls += 1
             running += 1
             peak = max(peak, running)
             await asyncio.sleep(0)
             running -= 1
+            subject.current_token = 'token'
+            subject.last_token_refresh_time = time.time()
             return 'token'
         subject._refresh_token_impl = refresh
         self.assertEqual(await asyncio.gather(subject.refresh_token(), subject.refresh_token()), ['token', 'token'])
         self.assertEqual(peak, 1)
+        self.assertEqual(calls, 1)
+        subject._authorization_paused.return_value = True
+        self.assertIsNone(await subject.refresh_token())
+        self.assertEqual(calls, 1)
 
     async def test_periodic_check_reconnects_only_after_verified_token(self):
         subject = self.subject({'_execute_cookie_refresh'})
         subject.cookie_id = 'account-1'
+        subject.current_token = None
+        subject.cookie_refresh_interval = 1200
+        subject.last_token_refresh_time = 0
         subject.ws = SimpleNamespace(closed=False, close=AsyncMock())
         subject.refresh_token = AsyncMock(return_value=None)
         await subject._execute_cookie_refresh(123)
@@ -237,6 +251,17 @@ class RenewalIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await subject._execute_cookie_refresh(456)
         subject.ws.close.assert_awaited_once()
         self.assertTrue(subject.connection_restart_flag)
+
+    async def test_startup_authorization_check_preserves_fresh_connection(self):
+        subject = self.subject({'_execute_cookie_refresh'})
+        subject.current_token = 'just-authenticated'
+        subject.last_token_refresh_time = 100
+        subject.cookie_refresh_interval = 1200
+        subject.ws = SimpleNamespace(closed=False, close=AsyncMock())
+        subject.refresh_token = AsyncMock(side_effect=AssertionError('duplicate refresh'))
+        await subject._execute_cookie_refresh(102)
+        subject.refresh_token.assert_not_awaited()
+        subject.ws.close.assert_not_awaited()
 
     async def run_expired_flow(self, renewal_status, *, response_payload=None, keep_saved=True, challenge=False, paused=False):
         import sys
@@ -277,7 +302,9 @@ class RenewalIntegrationTests(unittest.IsolatedAsyncioTestCase):
         subject._try_password_login_refresh = AsyncMock(return_value=False)
         subject.send_token_refresh_notification = AsyncMock()
         subject._safe_str = str
-        with patch.dict(sys.modules, {'app.db_manager': SimpleNamespace(db_manager=db), 'utils.risk_control': risk}):
+        import utils
+        with (patch.dict(sys.modules, {'app.db_manager': SimpleNamespace(db_manager=db)}),
+              patch.object(utils, 'risk_control', risk)):
             result = await subject._refresh_token_impl()
         if paused:
             post.assert_not_called()

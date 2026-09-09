@@ -2250,6 +2250,11 @@ class XianyuLive:
     async def refresh_token(self, captcha_retry_count: int = 0):
         # Token polling and periodic renewal share one per-account writer.
         async with self.cookie_refresh_lock:
+            if await self._authorization_paused():
+                self.last_token_refresh_status = 'authorization_paused'
+                return None
+            if (self.current_token and time.time() - self.last_token_refresh_time < 60):
+                return self.current_token
             return await self._refresh_token_impl(captcha_retry_count)
 
     async def _authorization_paused(self):
@@ -2273,7 +2278,18 @@ class XianyuLive:
         """A background refresh must never launch or solve a human challenge."""
         from utils import risk_control
         reason = '闲鱼要求安全验证，请在账号管理中手动验证或重新扫码'
-        risk_control.registry.get(self.cookie_id).trip(reason)
+        guard = risk_control.registry.get(self.cookie_id)
+        # Persist before returning; do not let a superseded response block a new login.
+        try:
+            stored = await asyncio.to_thread(db_manager.require_account_verification,
+                self.cookie_id, self.cookies_str, self.user_id)
+        except Exception:
+            guard.require_verification()
+            raise
+        if not stored:
+            self.last_token_refresh_status = 'superseded'
+            return
+        guard.require_verification()
         self.last_token_refresh_status = 'verification_required'
         logger.warning(f"【{self.cookie_id}】{reason}；已暂停请求，不自动打开浏览器")
         data = payload.get('data') if isinstance(payload, dict) else None
@@ -2343,6 +2359,7 @@ class XianyuLive:
                 return 'superseded'
             self.current_token = result.token
             self.last_token_refresh_time = time.time()
+            self.last_cookie_refresh_time = self.last_token_refresh_time
             self.last_token_refresh_status = 'success'
             self.needs_relogin = False
             self.relogin_reason = ''
@@ -2556,6 +2573,7 @@ class XianyuLive:
                                 new_token = res_json['data']['accessToken']
                                 self.current_token = new_token
                                 self.last_token_refresh_time = time.time()
+                                self.last_cookie_refresh_time = self.last_token_refresh_time
 
                                 # 【消息接收时间重置】Token刷新成功后重置消息接收标志，与 cookie_refresh_loop 保持一致
                                 self.last_message_received_time = 0
@@ -6653,8 +6671,12 @@ class XianyuLive:
                     current_time = time.time()
                     if current_time - self.last_token_refresh_time >= self.token_refresh_interval:
                         logger.info("Token即将过期，准备刷新...")
+                        previous_token = self.current_token
                         new_token = await self.refresh_token()
                         if new_token:
+                            if new_token == previous_token:
+                                await self._interruptible_sleep(60)
+                                continue
                             logger.info(f"【{self.cookie_id}】Token刷新成功，将关闭WebSocket以使用新Token重连")
                             
                             # Token刷新成功后，需要关闭WebSocket连接，让它用新Token重新连接
@@ -7925,8 +7947,11 @@ class XianyuLive:
     async def _execute_cookie_refresh(self, current_time):
         """Check authentication without pausing heartbeats or uploading test images."""
         try:
+            if self.current_token and current_time - self.last_token_refresh_time < self.cookie_refresh_interval:
+                return
+            previous_token = self.current_token
             token = await self.refresh_token()
-            if token:
+            if token and token != previous_token:
                 logger.info(f"【{self.cookie_id}】闲鱼授权检查通过，重新建立消息连接")
                 self.connection_restart_flag = True
                 if self.ws and not self.ws.closed:

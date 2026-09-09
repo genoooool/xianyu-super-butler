@@ -2031,7 +2031,32 @@ class DBManager:
                 logger.error(f"获取账号自动回复暂停时间失败: {e}")
                 return 10
 
-    def compare_and_update_cookie(self, cookie_id: str, expected: str, value: str, user_id: int) -> bool:
+    def get_account_verification_required(self, cookie_id: str) -> bool:
+        """Restore the current owner's verification hold without a platform request."""
+        with self.lock:
+            row = self.conn.execute('''
+                SELECT s.value FROM cookies c JOIN user_settings s ON s.user_id = c.user_id
+                WHERE c.id = ? AND s.key = ?
+            ''', (cookie_id, f'account_verification:{cookie_id}')).fetchone()
+            return bool(row and row[0] == '1')
+
+    def require_account_verification(self, cookie_id: str, expected: str, user_id: int) -> bool:
+        """A late challenge may not pause a newer login or another owner."""
+        with self.lock:
+            try:
+                cursor = self.conn.execute('''
+                    INSERT OR REPLACE INTO user_settings (user_id, key, value, description, updated_at)
+                    SELECT user_id, ?, '1', '等待用户完成闲鱼安全验证', CURRENT_TIMESTAMP
+                    FROM cookies WHERE id = ? AND value = ? AND user_id = ?
+                ''', (f'account_verification:{cookie_id}', cookie_id, expected, user_id))
+                self.conn.commit()
+                return cursor.rowcount == 1
+            except Exception:
+                self.conn.rollback()
+                raise
+
+    def compare_and_update_cookie(self, cookie_id: str, expected: str, value: str, user_id: int,
+                                  *, clear_verification: bool = False) -> bool:
         """Refresh an existing owner's credential only if no newer login replaced it."""
         with self.lock:
             try:
@@ -2040,8 +2065,14 @@ class DBManager:
                     "UPDATE cookies SET value = ? WHERE id = ? AND value = ? AND user_id = ?",
                     (value, cookie_id, expected, user_id),
                 )
+                changed = cursor.rowcount == 1
+                if changed and clear_verification:
+                    self.conn.execute('''
+                        INSERT OR REPLACE INTO user_settings (user_id, key, value, description, updated_at)
+                        VALUES (?, ?, '0', '闲鱼安全验证已完成', CURRENT_TIMESTAMP)
+                    ''', (user_id, f'account_verification:{cookie_id}'))
                 self.conn.commit()
-                return cursor.rowcount == 1
+                return changed
             except Exception:
                 self.conn.rollback()
                 logger.error("账号续期凭证保存失败")

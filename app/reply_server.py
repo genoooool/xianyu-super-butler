@@ -2942,7 +2942,8 @@ async def _process_qr_login_session(
         account_info = await process_qr_login_cookies(
             cookies_info['cookies'],
             cookies_info['unb'],
-            current_user
+            current_user,
+            verified_login=bool(cookies_info.get('browser_verified')),
         )
         manager_operation = account_info.pop('_manager_operation', None)
         if cookies_info.get('browser_verified'):
@@ -3015,7 +3016,8 @@ async def _process_qr_login_session(
         }
 
 
-async def process_qr_login_cookies(cookies: str, unb: str, current_user: Dict[str, Any]) -> Dict[str, Any]:
+async def process_qr_login_cookies(cookies: str, unb: str, current_user: Dict[str, Any],
+                                  *, verified_login: bool = False) -> Dict[str, Any]:
     """验证并快速保存扫码Cookie，不等待浏览器增强刷新。"""
     user_id = current_user['user_id']
     cookie_fields = trans_cookies(cookies)
@@ -3051,6 +3053,9 @@ async def process_qr_login_cookies(cookies: str, unb: str, current_user: Dict[st
 
     if is_new_account:
         saved = db_manager.save_cookie(account_id, cookies, user_id)
+    elif verified_login:
+        saved = db_manager.compare_and_update_cookie(
+            account_id, existing_cookies[account_id], cookies, user_id, clear_verification=True)
     else:
         saved = db_manager.update_cookie_account_info(
             account_id,
@@ -3059,6 +3064,13 @@ async def process_qr_login_cookies(cookies: str, unb: str, current_user: Dict[st
         )
     if not saved:
         raise RuntimeError("扫码Cookie保存失败")
+
+    if verified_login:
+        if is_new_account and not db_manager.compare_and_update_cookie(
+                account_id, cookies, cookies, user_id, clear_verification=True):
+            raise RuntimeError('扫码验证状态保存失败')
+        from utils import risk_control
+        risk_control.registry.get(account_id).resolve_verification()
 
     manager_operation = None
     if cookie_manager.manager:
@@ -9127,8 +9139,25 @@ async def start_manual_captcha(
             log_with_user('info', f"账号 {cookie_id} 已清除过期的验证挑战标记", current_user)
         result['cookies_str'] = cleaned_cookies
 
-        # 保存新 Cookie 并解除风控熔断，让账号能立刻重连
-        db_manager.save_cookie(cookie_id, result['cookies_str'])
+        # A completed page is not proof that IM accepted the credential.
+        # Verify once, then atomically save against the owner and original value.
+        from utils.platform_session import PlatformSession
+        from utils.xianyu_utils import generate_device_id
+        original = user_cookies[cookie_id]
+        account = trans_cookies(original).get('unb')
+        if not account or trans_cookies(result['cookies_str']).get('unb') != account:
+            raise HTTPException(409, '验证账号不一致，原授权已保留')
+        device_id = getattr(_instance, 'device_id', None) or generate_device_id(account)
+        async with PlatformSession(result['cookies_str'], device_id) as platform:
+            verified = await platform.verify_token()
+            if verified.status != 'success' or not verified.token or not platform.same_account():
+                raise HTTPException(409, '闲鱼仍未放行聊天认证，账号保持暂停，请稍后手动验证')
+        if trans_cookies(verified.cookies).get('unb') != account:
+            raise HTTPException(409, '验证账号不一致，原授权已保留')
+        if not db_manager.compare_and_update_cookie(
+                cookie_id, original, verified.cookies, current_user['user_id'], clear_verification=True):
+            raise HTTPException(409, '账号授权已更新，本次旧验证结果未覆盖新授权')
+        result['cookies_str'] = verified.cookies
 
         # 运行中的实例仍持有旧 Cookie，不同步会继续用旧值打接口并立刻再次熔断
         try:
@@ -9138,8 +9167,13 @@ async def start_manual_captcha(
                 instance = manager.instances.get(cookie_id)
                 if instance is not None:
                     instance.cookies_str = result['cookies_str']
-                    # 清掉失效令牌，强制下次请求重新获取
-                    instance.current_token = None
+                    instance.cookies = trans_cookies(result['cookies_str'])
+                    instance.current_token = verified.token
+                    instance.last_token_refresh_time = time.time()
+                    instance.last_cookie_refresh_time = instance.last_token_refresh_time
+                    instance.needs_relogin = False
+                    instance.relogin_reason = ''
+                    instance.last_token_refresh_status = 'success'
                     log_with_user('info', f"账号 {cookie_id} 运行实例已同步新 Cookie", current_user)
         except Exception as exc:
             log_with_user('warning', f"同步实例 Cookie 失败: {exc}", current_user)
@@ -9147,7 +9181,7 @@ async def start_manual_captcha(
         try:
             from utils import risk_control
 
-            risk_control.registry.get(cookie_id).reset()
+            risk_control.registry.get(cookie_id).resolve_verification()
         except Exception as exc:
             log_with_user('warning', f"重置风控状态失败: {exc}", current_user)
         log_with_user('info', f"账号 {cookie_id} 人工验证完成，已更新 Cookie", current_user)
@@ -9294,10 +9328,12 @@ def get_risk_control_status(current_user: Dict[str, Any] = Depends(get_current_u
 
     accounts = []
     for cid in user_cookies.keys():
-        state = snapshot.get(cid) or {
-            'cookie_id': cid, 'blocked': False,
-            'remaining_seconds': 0, 'consecutive_hits': 0, 'reason': '',
-        }
+        state = snapshot.get(cid) or risk_control.registry.get(cid).snapshot()
+        if state.get('verification_required'):
+            accounts.append({**state, 'verification_type': 'risk_control',
+                'verification_message': '等待人工验证，自动请求已暂停，重启后继续保留',
+                'verification_url': '', 'latest_event': '', 'latest_event_at': None})
+            continue
 
         # 账号已经跑起来了就不该再提示需要验证。下面的判定依据是风控日志，
         # 而那是历史记录 —— 滑块过完、Token 已拿到之后，旧事件仍留在表里，

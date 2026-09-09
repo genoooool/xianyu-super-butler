@@ -12,7 +12,7 @@ from playwright.async_api import async_playwright, expect
 
 
 async def run(args):
-    args.output_dir.mkdir(parents=True, exist_ok=False)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -27,7 +27,7 @@ async def run(args):
                                      ('fixture-c', '长期授权正常', 'running')]],
         '/ai-reply-settings': {},
         '/api/risk-control/status': {'accounts': [{'cookie_id': 'fixture-a', 'blocked': True,
-            'remaining_seconds': 58, 'verification_type': 'slider',
+            'remaining_seconds': 0, 'verification_required': True, 'verification_type': 'slider',
             'verification_message': '闲鱼要求安全验证'}]},
         '/desktop/notifications/status': {'available': False, 'active': False},
         '/desktop/credentials': {'available': False}, '/system-settings/public': {},
@@ -56,7 +56,10 @@ async def run(args):
                 await expect(page.get_by_text('监听中', exact=True)).to_be_visible()
                 await expect(page.get_by_text('安全验证不代表长期授权已过期', exact=False)).to_be_visible()
                 await expect(page.get_by_text('分钟后恢复', exact=False)).to_have_count(0)
-                await page.screenshot(path=str(args.output_dir / 'accounts.png'))
+                await expect(page.get_by_text('分钟后检查状态', exact=False)).to_have_count(0)
+                await expect(page.get_by_text('在我的浏览器打开验证页', exact=False)).to_have_count(0)
+                await expect(page.get_by_text('等待人工验证', exact=True)).to_be_visible()
+                await page.screenshot(path=str(args.output_dir / 'accounts.png'), animations='disabled')
                 assert all(method == 'GET' for method, _ in calls), calls
                 assert not any('/qr-login/' in path or '/manual-session' in path for _, path in calls)
                 assert not errors, errors

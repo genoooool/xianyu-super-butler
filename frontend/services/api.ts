@@ -327,6 +327,7 @@ export const getRiskControlStatus = async (): Promise<{
     blocked: boolean;
     remaining_seconds: number;
     consecutive_hits: number;
+    verification_required?: boolean;
     reason: string;
     verification_type: 'none' | 'slider' | 'face' | 'qr' | 'risk_control';
     verification_message: string;

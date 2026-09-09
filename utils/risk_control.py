@@ -10,7 +10,8 @@
   冷却时间按连续命中次数指数增长。
 - **限流**：令牌桶控制每个账号的请求速率，多账号并发时也不会突发。
 
-两者都是进程内状态，重启后重置 —— 这是可接受的，因为重启本身会间隔较久。
+人机验证另有持久等待状态；只有已核验的人工验证或扫码结果可以解除。
+普通限流仍使用有界冷却，不能用冷却到期解除人机验证。
 """
 
 import asyncio
@@ -54,6 +55,7 @@ class AccountGuard:
         self.blocked_until = 0.0
         self.consecutive_hits = 0
         self.last_hit_reason = ""
+        self.verification_required = False
 
         # 令牌桶：容量等于每分钟配额，按秒匀速补充
         self._tokens = float(self.rate_per_minute)
@@ -64,7 +66,7 @@ class AccountGuard:
 
     @property
     def is_blocked(self) -> bool:
-        return time.monotonic() < self.blocked_until
+        return self.verification_required or time.monotonic() < self.blocked_until
 
     @property
     def remaining_seconds(self) -> int:
@@ -85,11 +87,26 @@ class AccountGuard:
 
     def reset(self) -> None:
         """请求成功，解除熔断计数。"""
+        if self.verification_required:
+            return
         if self.consecutive_hits or self.blocked_until:
             logger.info(f"【{self.cookie_id}】风控状态已解除")
         self.consecutive_hits = 0
         self.blocked_until = 0.0
         self.last_hit_reason = ""
+
+    def require_verification(self) -> None:
+        if not self.verification_required:
+            self.consecutive_hits += 1
+            self.last_hit_reason = '闲鱼要求安全验证，等待用户完成'
+            logger.warning(f'【{self.cookie_id}】等待人工验证，自动请求已暂停，重启后继续保留')
+        self.verification_required = True
+        self.blocked_until = 0.0
+
+    def resolve_verification(self) -> None:
+        """Only call after an owner-matched verified credential has been saved."""
+        self.verification_required = False
+        self.reset()
 
     # ---------------- 限流 ----------------
 
@@ -97,6 +114,8 @@ class AccountGuard:
         """取一个令牌，不足时等待。"""
         async with self._lock:
             while True:
+                if self.is_blocked:
+                    raise RiskControlBlocked(self.cookie_id, self.remaining_seconds, self.last_hit_reason)
                 now = time.monotonic()
                 elapsed = now - self._last_refill
                 self._last_refill = now
@@ -117,20 +136,30 @@ class AccountGuard:
             "remaining_seconds": self.remaining_seconds,
             "consecutive_hits": self.consecutive_hits,
             "reason": self.last_hit_reason,
+            "verification_required": self.verification_required,
         }
 
 
 class RiskControlRegistry:
     """按账号维护 :class:`AccountGuard`。"""
 
-    def __init__(self, rate_per_minute: int = 30):
+    def __init__(self, rate_per_minute: int = 30, load_verification=None):
         self.rate_per_minute = rate_per_minute
         self._guards: Dict[str, AccountGuard] = {}
+        self._load_verification = load_verification
 
     def get(self, cookie_id: str) -> AccountGuard:
         guard = self._guards.get(cookie_id)
         if guard is None:
             guard = AccountGuard(cookie_id, self.rate_per_minute)
+            if self._load_verification is not None:
+                try:
+                    required = self._load_verification(cookie_id)
+                except Exception:
+                    logger.error(f'【{cookie_id}】无法读取安全验证状态，暂停自动请求')
+                    required = True
+                if required:
+                    guard.require_verification()
             self._guards[cookie_id] = guard
         return guard
 
@@ -152,7 +181,12 @@ class RiskControlBlocked(Exception):
 
 
 # 全局注册表：默认每账号每分钟 30 次主动请求
-registry = RiskControlRegistry(rate_per_minute=30)
+def _load_saved_verification(cookie_id):
+    from app.db_manager import db_manager
+    return db_manager.get_account_verification_required(cookie_id)
+
+
+registry = RiskControlRegistry(rate_per_minute=30, load_verification=_load_saved_verification)
 
 
 async def guarded_call(cookie_id: str, coro_factory):

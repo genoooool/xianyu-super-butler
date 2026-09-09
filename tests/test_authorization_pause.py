@@ -52,8 +52,15 @@ class AuthorizationPauseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.subject.cookies_str, before)
         self.db.save_cookie.assert_not_called()
         self.assertEqual(self.subject.last_token_refresh_status, 'verification_required')
-        self.registry.get('account-1').reset()
+        self.registry.get('account-1').resolve_verification()
         self.assertFalse(await self.subject._authorization_paused())
+
+    async def test_late_challenge_cannot_hold_replaced_credential(self):
+        self.subject.needs_relogin = False
+        self.db.require_account_verification.return_value = False
+        await self.subject._defer_platform_verification()
+        self.assertFalse(await self.subject._authorization_paused())
+        self.assertEqual(self.subject.last_token_refresh_status, 'superseded')
 
     async def test_main_waits_without_connecting_or_password_restart(self):
         subject = extract_methods('XianyuAutoAsync.py', 'XianyuLive', {'main'},

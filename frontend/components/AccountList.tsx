@@ -18,7 +18,6 @@ import {
   refreshAccountProfile,
   getRiskControlStatus,
   startManualCaptchaSession,
-  requestFreshCaptchaUrl,
   ACCOUNT_REPLY_CHANGED,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
@@ -37,6 +36,7 @@ const AccountList: React.FC = () => {
     cookie_id: string;
     blocked: boolean;
     remaining_seconds: number;
+    verification_required?: boolean;
     verification_type: 'none' | 'slider' | 'face' | 'qr' | 'risk_control';
     verification_message: string;
     verification_url?: string;
@@ -70,7 +70,6 @@ const AccountList: React.FC = () => {
   const replyControl = useAccountReplyControl(activeModal === 'ai-settings' ? editingAccount?.id || '' : '');
   const [refreshingProfileId, setRefreshingProfileId] = useState<string | null>(null);
   // 正在取新验证链接的账号
-  const [freshUrlLoadingId, setFreshUrlLoadingId] = useState<string | null>(null);
   const [manualCaptchaId, setManualCaptchaId] = useState<string | null>(null);
   // 人工滑块验证弹窗：把服务器端浏览器的画面镜像到本页
   const [captchaAccount, setCaptchaAccount] = useState<AccountDetail | null>(null);
@@ -175,33 +174,6 @@ const AccountList: React.FC = () => {
     loadAccounts();
   };
 
-  // 点按钮时实时取链接，而不是用风控日志里的历史链接 ——
-  // punish 链接的 x5secdata 只能用一次、约 1 小时失效，
-  // 旧链接打开只会看到「抱歉，页面访问出现了问题」。
-  const handleOpenFreshCaptcha = async (id: string) => {
-    setFreshUrlLoadingId(id);
-    try {
-      const result = await requestFreshCaptchaUrl(id);
-      if (!result.need_verify) {
-        notify(result.message || '该账号风控已解除，无需验证', 'success');
-        await loadAccounts({ silent: true });
-        const status = await getRiskControlStatus();
-        setRiskBlocked((status.accounts || []).filter(
-          item => item.blocked || (item.verification_type && item.verification_type !== 'none')
-        ));
-        return;
-      }
-      if (result.verification_url) {
-        window.open(result.verification_url, '_blank', 'noopener,noreferrer');
-        notify('已打开验证页，请用鼠标拖动滑块完成验证', 'info');
-      }
-    } catch (error) {
-      notify(error instanceof Error ? error.message : '获取验证链接失败', 'error');
-    } finally {
-      setFreshUrlLoadingId(null);
-    }
-  };
-
   const handleRefreshProfile = async (id: string) => {
     setRefreshingProfileId(id);
     try {
@@ -234,7 +206,7 @@ const AccountList: React.FC = () => {
     setCaptchaAccount(account);
     setCaptchaShot('');
     setCaptchaStage('starting');
-    setCaptchaMessage('正在服务器上启动验证页面，请稍候…');
+    setCaptchaMessage('正在准备验证页面，请稍候…');
     setManualCaptchaId(account.id);
 
     try {
@@ -593,9 +565,9 @@ const AccountList: React.FC = () => {
           </p>
           <p className="mt-1 text-xs leading-5 text-amber-800">
             {riskBlocked.map(item => `${item.cookie_id}：${item.verification_message || '平台风控'}`).join('；')}。
-            {/* 只有本地熔断中才有确切的恢复时间；闲鱼侧的验证要求要靠过验证解除，
-                写死「N 分钟后恢复」会让用户干等一个不会自动好的状态 */}
-            {riskBlocked.some(a => a.blocked) ? (
+            {riskBlocked.some(a => a.verification_required) ? (
+              <> 自动请求已暂停，重启软件后也会保留。安全验证不代表长期授权已过期；请点击对应账号的「人工验证」，完成并通过聊天认证后恢复。</>
+            ) : riskBlocked.some(a => a.blocked) ? (
               <>
                 {' '}系统已暂停请求，将在约
                 {' '}
@@ -698,7 +670,7 @@ const AccountList: React.FC = () => {
                   <p className="mt-1 text-xs font-medium text-gray-400">备注：{account.remark}</p>
                 )}
                 <div className="flex flex-wrap gap-2">
-                   {blockedState && <span className="status-badge bg-red-100 text-red-700">{blockedState.verification_type === 'slider' ? '滑块验证' : blockedState.verification_type === 'face' ? '人脸验证' : '平台风控'}{blockedState.blocked ? ` · ${Math.max(1, Math.ceil(blockedState.remaining_seconds / 60))} 分钟` : ''}</span>}
+                   {blockedState && <span className="status-badge bg-red-100 text-red-700">{blockedState.verification_required ? '等待人工验证' : blockedState.verification_type === 'slider' ? '滑块验证' : blockedState.verification_type === 'face' ? '人脸验证' : '平台风控'}{blockedState.blocked && !blockedState.verification_required ? ` · ${Math.max(1, Math.ceil(blockedState.remaining_seconds / 60))} 分钟` : ''}</span>}
                    {account.auto_confirm && <span className="status-badge status-badge-warning flex items-center gap-1.5"><MessageSquare className="w-3 h-3"/> 自动确认发货</span>}
                 </div>
                 {/* 登录态过期给出明确动作，只挂一个徽标用户不知道该做什么 */}
@@ -708,27 +680,12 @@ const AccountList: React.FC = () => {
                     用同一个闲鱼账号重新扫码，即可覆盖并恢复该账号。
                   </p>
                 )}
-                {/* 闲鱼要求人机验证时给出「自己浏览器打开」的入口。
-                    服务器端用 CDP 拖滑块通过率很低（风控查的是合并前子事件密度，
-                    自动化派发每帧只有一个），用真实鼠标过一次要可靠得多。 */}
-                {blockedState?.verification_url && (
+                {blockedState && (
                   <div className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
                     <p className="font-bold">闲鱼要求完成人机验证，账号暂时拿不到令牌</p>
                     <p className="mt-1">
-                      推荐用你自己的浏览器打开验证页、用真实鼠标拖动滑块，通过率远高于服务器自动拖动。
-                      验证通过后本页会自动恢复，无需重新扫码。
+                      点击右侧「人工验证」，在弹窗中亲自完成验证。工作台会核对聊天认证并保存结果；未通过前保持暂停，无需反复扫码或重启。
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => handleOpenFreshCaptcha(account.id)}
-                      disabled={freshUrlLoadingId === account.id}
-                      className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-[#ffe100] px-3 py-1.5 font-bold text-[#2a2416] hover:bg-[#ffd700] disabled:opacity-60"
-                    >
-                      {freshUrlLoadingId === account.id
-                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        : <ShieldCheck className="h-3.5 w-3.5" />}
-                      在我的浏览器打开验证页
-                    </button>
                   </div>
                 )}
               </div>
