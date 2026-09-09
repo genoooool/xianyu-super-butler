@@ -238,7 +238,7 @@ class RenewalIntegrationTests(unittest.IsolatedAsyncioTestCase):
         subject.ws.close.assert_awaited_once()
         self.assertTrue(subject.connection_restart_flag)
 
-    async def run_expired_flow(self, renewal_status, *, response_payload=None, keep_saved=True):
+    async def run_expired_flow(self, renewal_status, *, response_payload=None, keep_saved=True, challenge=False, paused=False):
         import sys
         from contextlib import asynccontextmanager
         @asynccontextmanager
@@ -268,7 +268,10 @@ class RenewalIntegrationTests(unittest.IsolatedAsyncioTestCase):
         subject.message_cookie_refresh_cooldown = 300
         subject.needs_relogin = False
         subject.current_token = 'restored-token'
-        subject._need_captcha_verification = Mock(return_value=False)
+        subject._authorization_paused = AsyncMock(return_value=paused)
+        subject._need_captcha_verification = Mock(return_value=challenge)
+        subject._defer_platform_verification = AsyncMock()
+        subject._handle_captcha_verification = AsyncMock(side_effect=AssertionError('No automatic browser'))
         subject._renew_platform_login = AsyncMock(return_value=renewal_status)
         subject._enable_platform_keep_login = AsyncMock(return_value=keep_saved)
         subject._try_password_login_refresh = AsyncMock(return_value=False)
@@ -276,10 +279,37 @@ class RenewalIntegrationTests(unittest.IsolatedAsyncioTestCase):
         subject._safe_str = str
         with patch.dict(sys.modules, {'app.db_manager': SimpleNamespace(db_manager=db), 'utils.risk_control': risk}):
             result = await subject._refresh_token_impl()
-        self.assertIn('cookie2=old-session', post.call_args.kwargs['headers']['cookie'])
-        if response_payload is None:
+        if paused:
+            post.assert_not_called()
+        else:
+            self.assertIn('cookie2=old-session', post.call_args.kwargs['headers']['cookie'])
+        if response_payload is None and not paused:
             subject._renew_platform_login.assert_awaited_once()
         return subject, result
+
+    async def test_startup_challenge_does_not_open_browser_or_attempt_renewal(self):
+        payload = {'ret': ['FAIL_SYS_USER_VALIDATE', 'RGV587_ERROR::SM'],
+                   'data': {'url': 'https://h5api.m.goofish.com/punish?fake=challenge'}}
+        subject, token = await self.run_expired_flow('success', response_payload=payload, challenge=True)
+        self.assertIsNone(token)
+        subject._handle_captcha_verification.assert_not_awaited()
+        subject._renew_platform_login.assert_not_awaited()
+        subject._try_password_login_refresh.assert_not_awaited()
+        subject._defer_platform_verification.assert_awaited_once_with(payload)
+        self.assertFalse(subject.needs_relogin)
+
+    async def test_silent_login_challenge_is_not_reported_as_expiry(self):
+        subject, token = await self.run_expired_flow('verification_required')
+        self.assertIsNone(token)
+        self.assertFalse(subject.needs_relogin)
+        subject._defer_platform_verification.assert_awaited_once_with()
+        subject._try_password_login_refresh.assert_not_awaited()
+
+    async def test_waiting_for_authorization_makes_no_platform_requests(self):
+        subject, token = await self.run_expired_flow('unavailable', paused=True)
+        self.assertIsNone(token)
+        subject._renew_platform_login.assert_not_awaited()
+        subject._try_password_login_refresh.assert_not_awaited()
 
     async def test_late_keep_login_result_cannot_connect_with_superseded_token(self):
         subject, token = await self.run_expired_flow('success', response_payload=SUCCESS, keep_saved=False)

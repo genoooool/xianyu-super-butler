@@ -2252,6 +2252,43 @@ class XianyuLive:
         async with self.cookie_refresh_lock:
             return await self._refresh_token_impl(captcha_retry_count)
 
+    async def _authorization_paused(self):
+        """Wait locally for a new login or platform cooldown, without opening a browser."""
+        from utils import risk_control
+        if self.needs_relogin:
+            latest = await asyncio.to_thread(db_manager.get_cookie_details, self.cookie_id)
+            value = latest.get('value') if latest else None
+            if (not value or value == self.cookies_str or
+                    latest.get('user_id') != self.user_id or
+                    trans_cookies(value).get('unb') != self.myid):
+                return True
+            self.cookies_str = value
+            self.cookies = trans_cookies(value)
+            self.needs_relogin = False
+            self.relogin_reason = ''
+            self.current_token = None
+        return risk_control.registry.get(self.cookie_id).is_blocked
+
+    async def _defer_platform_verification(self, payload=None):
+        """A background refresh must never launch or solve a human challenge."""
+        from utils import risk_control
+        reason = '闲鱼要求安全验证，请在账号管理中手动验证或重新扫码'
+        risk_control.registry.get(self.cookie_id).trip(reason)
+        self.last_token_refresh_status = 'verification_required'
+        logger.warning(f"【{self.cookie_id}】{reason}；已暂停请求，不自动打开浏览器")
+        data = payload.get('data') if isinstance(payload, dict) else None
+        url = data.get('url', '') if isinstance(data, dict) else ''
+        # Keep the account-scoped link available to the explicit manual action.
+        # Do not write challenge query strings into application/file logs.
+        await asyncio.to_thread(
+            db_manager.add_risk_control_log,
+            cookie_id=self.cookie_id,
+            event_type='slider_captcha' if url else 'verification_required',
+            event_description=f'{reason}, URL: {url}' if url else reason,
+            processing_status='pending',
+            processing_result='等待用户手动验证；后台不会自动打开浏览器',
+        )
+
     async def _save_refreshed_cookies(self, expected, candidate):
         """A late refresh cannot replace a newer QR login or change ownership."""
         candidate_fields = trans_cookies(candidate)
@@ -2320,9 +2357,6 @@ class XianyuLive:
         """
         # 初始化通知发送标志，避免重复发送通知
         notification_sent = False
-        # 本轮是否已经记过一次风控熔断。滑块失败分支和后面基于 ret 的通用分支
-        # 都会 trip()，同一次失败记两次会让冷却阶梯跳级、账号被多锁一倍时间。
-        already_tripped = False
         
         try:
             logger.info(f"【{self.cookie_id}】开始刷新token... (滑块验证重试次数: {captcha_retry_count})")
@@ -2330,6 +2364,10 @@ class XianyuLive:
             self.last_token_refresh_status = "started"
             # 重置“刷新流程内已重启”标记，避免多次重启
             self.restarted_in_browser_refresh = False
+
+            if await self._authorization_paused():
+                self.last_token_refresh_status = 'authorization_paused'
+                return None
 
             # 风控冷却期内不再尝试刷新 —— 持续请求会让风控一直不解除
             from utils import risk_control
@@ -2542,123 +2580,10 @@ class XianyuLive:
                                     return None
                                 return self.current_token
 
-                    # 检查是否需要滑块验证
+                    # Human verification is an explicit user action, never startup work.
                     if self._need_captcha_verification(res_json):
-                        logger.warning(f"【{self.cookie_id}】检测到需要滑块验证，开始处理...")
-
-                        # 记录滑块验证检测到日志文件
-                        verification_url = res_json.get('data', {}).get('url', 'Token刷新时检测')
-                        log_captcha_event(self.cookie_id, "检测到滑块验证", None, f"触发场景: Token刷新, URL: {verification_url}")
-
-                        # 添加风控日志记录
-                        log_id = None
-                        try:
-                            from app.db_manager import db_manager
-                            success = db_manager.add_risk_control_log(
-                                cookie_id=self.cookie_id,
-                                event_type='slider_captcha',
-                                event_description=f"检测到需要滑块验证，触发场景: Token刷新, URL: {verification_url}",
-                                processing_status='processing'
-                            )
-                            if success:
-                                # 获取刚插入的记录ID（简单方式，实际应该返回ID）
-                                logs = db_manager.get_risk_control_logs(cookie_id=self.cookie_id, limit=1)
-                                if logs:
-                                    log_id = logs[0].get('id')
-                                logger.info(f"【{self.cookie_id}】风控日志记录成功，ID: {log_id}")
-                        except Exception as log_e:
-                            logger.error(f"【{self.cookie_id}】记录风控日志失败: {log_e}")
-
-                        try:
-                            # 尝试通过滑块验证获取新的cookies
-                            captcha_start_time = time.time()
-                            new_cookies_str = await self._handle_captcha_verification(res_json)
-                            captcha_duration = time.time() - captcha_start_time
-
-                            if new_cookies_str:
-                                logger.info(f"【{self.cookie_id}】滑块验证成功，准备重启实例...")
-
-                                # 更新风控日志为成功状态
-                                if 'log_id' in locals() and log_id:
-                                    try:
-                                        from app.db_manager import db_manager
-                                        db_manager.update_risk_control_log(
-                                            log_id=log_id,
-                                            processing_result=f"滑块验证成功，耗时: {captcha_duration:.2f}秒, cookies长度: {len(new_cookies_str)}",
-                                            processing_status='success'
-                                        )
-                                    except Exception as update_e:
-                                        logger.error(f"【{self.cookie_id}】更新风控日志失败: {update_e}")
-
-                                # 重启实例（cookies已在_handle_captcha_verification中更新到数据库）
-                                # await self._restart_instance()
-                                
-                                # 重新尝试刷新token（递归调用，但有深度限制）
-                                return await self._refresh_token_impl(captcha_retry_count + 1)
-                            else:
-                                logger.error(f"【{self.cookie_id}】滑块验证失败")
-
-                                # 自动验证失败后立即熔断。实测滑块虽被拖到目标位置，
-                                # 服务端仍判定失败（行为特征识别），继续自动重试不会成功，
-                                # 只会让风控持续更久 —— 此时应转人工处理。
-                                risk_control.registry.get(self.cookie_id).trip(
-                                    "滑块自动验证失败，需人工处理"
-                                )
-                                # 本轮已经熔断过，后面基于 ret 的通用风控分支不要再记一次：
-                                # 同一次失败连续 trip 两次会让冷却阶梯跳级
-                                # （300 秒直接跳到 600 秒），账号被多锁一倍时间。
-                                already_tripped = True
-
-                                # 更新风控日志为失败状态
-                                if 'log_id' in locals() and log_id:
-                                    try:
-                                        from app.db_manager import db_manager
-                                        db_manager.update_risk_control_log(
-                                            log_id=log_id,
-                                            processing_result=f"滑块验证失败，耗时: {captcha_duration:.2f}秒, 原因: 未获取到新cookies",
-                                            processing_status='failed'
-                                        )
-                                    except Exception as update_e:
-                                        logger.error(f"【{self.cookie_id}】更新风控日志失败: {update_e}")
-                                
-                                # 标记已发送通知（通知已在_handle_captcha_verification中发送）
-                                notification_sent = True
-
-                                # 自动验证已无望，给出可操作的人工处理指引。
-                                # 滑块被拖到目标位置仍被判失败时，重试再多次也不会通过。
-                                try:
-                                    await self.send_token_refresh_notification(
-                                        "滑块自动验证失败，需要人工处理\n\n"
-                                        "处理方式（任选其一）：\n"
-                                        "1. 在账号管理页重新扫码登录（最直接）\n"
-                                        "2. 用浏览器登录 www.goofish.com 手动完成验证后更新 Cookie\n\n"
-                                        "系统已暂停该账号的自动请求，避免风控加重。",
-                                        "captcha_manual_required",
-                                    )
-                                except Exception as notify_error:
-                                    logger.warning(
-                                        f"【{self.cookie_id}】发送人工处理通知失败: "
-                                        f"{self._safe_str(notify_error)}"
-                                    )
-                        except Exception as captcha_e:
-                            logger.error(f"【{self.cookie_id}】滑块验证处理异常: {self._safe_str(captcha_e)}")
-
-                            # 更新风控日志为异常状态
-                            captcha_duration = time.time() - captcha_start_time if 'captcha_start_time' in locals() else 0
-                            if 'log_id' in locals() and log_id:
-                                try:
-                                    from app.db_manager import db_manager
-                                    db_manager.update_risk_control_log(
-                                        log_id=log_id,
-                                        processing_result=f"滑块验证处理异常，耗时: {captcha_duration:.2f}秒",
-                                        processing_status='failed',
-                                        error_message=str(captcha_e)
-                                    )
-                                except Exception as update_e:
-                                    logger.error(f"【{self.cookie_id}】更新风控日志失败: {update_e}")
-                            
-                            # 标记已发送通知（通知已在_handle_captcha_verification中发送）
-                            notification_sent = True
+                        await self._defer_platform_verification(res_json)
+                        return None
 
                     # 「令牌过期」和「Session过期」必须分开处理 —— 它们不是一回事：
                     #
@@ -2695,8 +2620,7 @@ class XianyuLive:
                                 # A network failure or cooldown does not require a new scan.
                                 self.last_token_refresh_status = renewal_status
                                 if renewal_status == 'verification_required':
-                                    self.needs_relogin = True
-                                    self.relogin_reason = '闲鱼要求手机验证，请重新扫码完成授权'
+                                    await self._defer_platform_verification()
                                 return None
                             # 调用统一的密码登录刷新方法
                             refresh_success = await self._try_password_login_refresh("Session过期")
@@ -2730,8 +2654,7 @@ class XianyuLive:
 
                     # 平台风控：立刻熔断，避免重试风暴反复触发验证
                     if risk_control.is_risk_control_error(json.dumps(ret_value, ensure_ascii=False)):
-                        if not already_tripped:
-                            guard.trip(str(ret_value[:2]))
+                        guard.trip(str(ret_value[:2]))
                         self.last_token_refresh_status = "risk_control"
                         return None
 
@@ -10586,6 +10509,12 @@ class XianyuLive:
                         logger.info(f"【{self.cookie_id}】账号已禁用，停止主循环")
                         break
 
+                    # Expired sessions wait for changed credentials; challenges respect
+                    # cooldown before opening a socket. Neither should trigger restart.
+                    if await self._authorization_paused():
+                        await self._interruptible_sleep(5)
+                        continue
+
                     headers = WEBSOCKET_HEADERS.copy()
                     headers['Cookie'] = self.cookies_str
 
@@ -10781,6 +10710,9 @@ class XianyuLive:
                         self.connection_failures += 1
                         # 更新连接状态为重连中
                         self._set_connection_state(ConnectionState.RECONNECTING, f"连接关闭，第{self.connection_failures}次重连")
+
+                    if await self._authorization_paused():
+                        continue
 
                     # 检查是否超过最大失败次数
                     if self.connection_failures >= self.max_connection_failures:

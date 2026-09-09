@@ -10,8 +10,11 @@
 
 import asyncio
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
-from app.reply_server import _AccountRequestDedup, _is_account_connection_alive
+from fastapi import HTTPException
+from app.reply_server import _AccountRequestDedup, _is_account_connection_alive, _run_on_account_loop
 
 
 class FakeState:
@@ -58,6 +61,20 @@ class ConnectionAliveTests(unittest.TestCase):
 
 
 class RequestDedupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_verification_returns_actionable_error_without_platform_call(self):
+        instance = FakeInstance('reconnecting', None)
+        manager = SimpleNamespace(loop=asyncio.get_running_loop(), instances={'a': instance})
+        operation = AsyncMock()
+        guard = SimpleNamespace(is_blocked=True)
+        with patch('app.reply_server.cookie_manager.manager', manager), \
+             patch('utils.risk_control.registry.get', return_value=guard):
+            with self.assertRaises(HTTPException) as error:
+                await _run_on_account_loop('a', operation)
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertIn('安全验证', error.exception.detail)
+        self.assertNotIn('过期', error.exception.detail)
+        operation.assert_not_awaited()
+
     def test_message_ids_and_customer_content_are_not_throttle_errors(self):
         for result in ({'userMessageModels': [{'messageId': '429123', 'text': 'flow controled'}]},
                        {'data': {'messageId': '1429429', 'text': '429 FAIL_SYS_FLOW_LIMIT'}},

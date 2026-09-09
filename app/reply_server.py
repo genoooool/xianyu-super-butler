@@ -1383,6 +1383,13 @@ async def _run_on_account_loop(cookie_id: str, operation):
                     or '闲鱼登录态已过期，请重新扫码登录该账号'
                 ),
             )
+        from utils import risk_control
+        guard = risk_control.registry.get(cookie_id)
+        if guard.is_blocked:
+            raise HTTPException(
+                status_code=409,
+                detail='闲鱼要求安全验证，账号已暂停请求。请在账号管理中手动验证或重新扫码。',
+            )
         await asyncio.sleep(3)  # 给自动重连一点时间
         if not _is_account_connection_alive(instance):
             if getattr(instance, 'needs_relogin', False):
