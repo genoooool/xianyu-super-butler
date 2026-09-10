@@ -79,6 +79,7 @@ const AccountList: React.FC = () => {
   const [captchaStage, setCaptchaStage] = useState<'starting' | 'ready' | 'done' | 'failed'>('starting');
   const [captchaMessage, setCaptchaMessage] = useState('');
   const [nativeCaptcha, setNativeCaptcha] = useState<boolean | null>(null);
+  const [regularChrome, setRegularChrome] = useState(false);
   const captchaAttemptRef = useRef<{ accountId: string; id: string } | null>(null);
   const captchaWsRef = useRef<WebSocket | null>(null);
   const captchaImgRef = useRef<HTMLImageElement>(null);
@@ -235,8 +236,11 @@ const AccountList: React.FC = () => {
       const mode = await getManualCaptchaMode();
       if (captchaAttemptRef.current !== attempt) return;
       setNativeCaptcha(mode.native);
-      if (mode.native) setCaptchaMessage('请在即将打开的官网窗口中完成验证，成功保存后会自动关闭。');
-      const result = await startManualCaptchaSession(account.id, 300, attempt.id);
+      setRegularChrome(mode.browser === 'chrome');
+      if (mode.native) setCaptchaMessage(mode.browser === 'chrome'
+        ? '正在用常用 Chrome 打开官网消息页；如提示验证，请在网页完成。成功保存后只关闭本次标签。'
+        : '正在打开官网消息页；如提示安全验证，请在官网完成，认证成功后会自动关闭。');
+      const result = await startManualCaptchaSession(account.id, 300, attempt.id, mode.browser);
       if (captchaAttemptRef.current !== attempt) return;
       if (!result.success) throw new Error(result.message || '人工验证未完成');
       setCaptchaStage('done');
@@ -1179,7 +1183,7 @@ const AccountList: React.FC = () => {
           <div className="modal-container modal-container-lg">
             <div className="modal-header flex items-start justify-between gap-4">
               <div>
-                <h3 className="text-lg font-bold text-gray-900">人工滑块验证</h3>
+                <h3 className="text-lg font-bold text-gray-900">{nativeCaptcha ? '官网安全验证' : '人工滑块验证'}</h3>
                 <p className="mt-1 text-sm text-gray-500">
                   {captchaAccount.nickname || captchaAccount.id}
                 </p>
@@ -1198,7 +1202,7 @@ const AccountList: React.FC = () => {
               <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs leading-relaxed text-blue-800">
                 <p className="font-bold">{nativeCaptcha ? '在官网窗口直接操作' : '完成人工验证'}</p>
                 <p className="mt-1">
-                  {nativeCaptcha
+                  {regularChrome ? '使用常用 Chrome 中的闲鱼登录状态。关闭此弹窗仅结束本次验证标签，保留其他网页。' : nativeCaptcha
                     ? '请在专用浏览器中按官网提示操作。关闭此弹窗会一并关闭本次官网窗口。'
                     : '请按验证页面提示完成操作。关闭后保留原授权，账号继续等待人工验证。'}
                 </p>

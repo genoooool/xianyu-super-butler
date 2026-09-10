@@ -73,7 +73,7 @@ class VerificationHoldTests(unittest.TestCase):
 
 
 class ManualVerificationReceiptTests(unittest.IsolatedAsyncioTestCase):
-    async def attempt(self, *, status='success', stored=True, other_account=False):
+    async def attempt(self, *, status='success', stored=True, other_account=False, browser=False):
         from app import reply_server
         from utils import risk_control
         from utils.platform_session import RenewalResult
@@ -91,6 +91,9 @@ class ManualVerificationReceiptTests(unittest.IsolatedAsyncioTestCase):
             'unb=123; cookie2=verified; havana_lgc2_77=long', 'verified-token'))
         result = {'success': True, 'message': 'completed', 'session_id': 'test',
                   'cookies_str': f'unb={456 if other_account else 123}; x5sec=manual'}
+        if browser:
+            from utils.browser_im_verification import BrowserIMReceipt
+            result['browser_receipt'] = BrowserIMReceipt('123', 'official-device', result['cookies_str'], 'official-token')
         async def complete(*args, finalize, **kwargs):
             self.assertTrue(instance.manual_captcha_in_progress)
             await finalize(result)
@@ -102,7 +105,7 @@ class ManualVerificationReceiptTests(unittest.IsolatedAsyncioTestCase):
               patch('utils.manual_captcha.open_manual_session', side_effect=complete),
               patch('utils.platform_session.PlatformSession', return_value=session)):
             try:
-                await reply_server.start_manual_captcha('a', 300, {'user_id': 7, 'username': 'test'}, '')
+                await reply_server.start_manual_captcha('a', 300, {'user_id': 7, 'username': 'test'}, '', '')
                 error = None
             except Exception as exc:
                 error = exc
@@ -132,6 +135,23 @@ class ManualVerificationReceiptTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(error.status_code, 409)
             self.assertTrue(guard.is_blocked)
             db.save_cookie.assert_not_called()
+
+    async def test_official_browser_receipt_reuses_authentication_without_second_http_request(self):
+        error, db, session, instance, guard = await self.attempt(browser=True)
+        self.assertIsNone(error)
+        session.verify_token.assert_not_awaited()
+        self.assertEqual(instance.current_token, 'official-token')
+        self.assertEqual(instance.device_id, 'official-device')
+        self.assertFalse(guard.is_blocked)
+        db.compare_and_update_cookie.assert_called_once_with(
+            'a', 'unb=123; cookie2=old', 'unb=123; x5sec=manual', 7, clear_verification=True)
+
+    async def test_official_receipt_still_requires_current_account_and_atomic_save(self):
+        for kwargs in ({'stored': False}, {'other_account': True}):
+            error, db, session, _, guard = await self.attempt(browser=True, **kwargs)
+            self.assertEqual(error.status_code, 409)
+            self.assertTrue(guard.is_blocked)
+            session.verify_token.assert_not_awaited()
 
 
 class VerifiedQRHoldTests(unittest.IsolatedAsyncioTestCase):

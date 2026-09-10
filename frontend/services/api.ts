@@ -354,6 +354,7 @@ export const startManualCaptchaSession = async (
   cookieId: string,
   timeout: number = 300,
   attemptId: string = '',
+  browserMode: string = '',
 ): Promise<{
   success: boolean;
   message: string;
@@ -363,10 +364,11 @@ export const startManualCaptchaSession = async (
   formData.append('cookie_id', cookieId);
   formData.append('timeout', String(timeout));
   formData.append('attempt_id', attemptId);
+  formData.append('browser_mode', browserMode);
   return post('/api/captcha/manual-session', formData, { timeout: (timeout + 120) * 1000 });
 };
 
-export const getManualCaptchaMode = () => get<{ native: boolean }>('/api/captcha/manual-mode');
+export const getManualCaptchaMode = () => get<{ native: boolean; browser: 'chrome' | 'builtin' }>('/api/captcha/manual-mode');
 
 export const cancelManualCaptchaSession = (cookieId: string, attemptId: string) => {
   const formData = new FormData();

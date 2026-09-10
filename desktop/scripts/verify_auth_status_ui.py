@@ -31,7 +31,7 @@ async def run(args):
             'verification_message': '闲鱼要求安全验证'}]},
         '/desktop/notifications/status': {'available': False, 'active': False},
         '/desktop/credentials': {'available': False}, '/system-settings/public': {},
-        '/api/captcha/manual-mode': {'native': True},
+        '/api/captcha/manual-mode': {'native': True, 'browser': 'chrome'},
     }
     calls, errors = [], []
     manual_started, manual_done = asyncio.Event(), asyncio.Event()
@@ -80,6 +80,7 @@ async def run(args):
                 await action.click()
                 await asyncio.wait_for(manual_started.wait(), 5)
                 await expect(page.get_by_text('在官网窗口直接操作', exact=True)).to_be_visible()
+                await expect(page.get_by_text('使用常用 Chrome 中的闲鱼登录状态。', exact=False)).to_be_visible()
                 await expect(page.get_by_alt_text('服务器端验证页面')).to_have_count(0)
                 await page.screenshot(path=str(args.output_dir / 'native-verification.png'), animations='disabled')
                 await page.get_by_role('button', name='关闭', exact=True).last.click()

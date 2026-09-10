@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Body, Query
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Body, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -9085,7 +9085,10 @@ def use_quick_phrase(
 @app.get('/api/captcha/manual-mode')
 async def get_manual_captcha_mode(current_user: Dict[str, Any] = Depends(get_current_user)):
     from utils.manual_captcha import native_verification_enabled
-    return {'native': native_verification_enabled()}
+    from utils.regular_chrome_verification import regular_chrome_profile
+    native = native_verification_enabled()
+    profile = await regular_chrome_profile() if native else None
+    return {'native': native, 'browser': 'chrome' if profile else 'builtin'}
 
 
 @app.post('/api/captcha/manual-session/cancel')
@@ -9111,6 +9114,8 @@ async def start_manual_captcha(
     timeout: int = Form(300),
     current_user: Dict[str, Any] = Depends(get_current_user),
     attempt_id: str = Form(''),
+    browser_mode: str = Form(''),
+    request: Request = None,
 ):
     """开启人工验证会话。
 
@@ -9141,6 +9146,19 @@ async def start_manual_captcha(
             detail="该账号当前不处于风控状态，无需人工验证",
         )
 
+    from utils.regular_chrome_verification import regular_chrome_profile
+    if browser_mode not in ('', 'chrome', 'builtin'):
+        raise HTTPException(400, '无效的验证方式')
+    native = native_verification_enabled()
+    profile = await regular_chrome_profile() if native and browser_mode != 'builtin' else None
+    if browser_mode == 'chrome' and not profile:
+        raise HTTPException(409, '常用 Chrome 的连接不可用，请保持 Chrome 与浏览器连接工具开启')
+    prepare_url = ''
+    if profile:
+        if request is None or not request.scope.get('server'):
+            raise HTTPException(409, '本机验证页面不可用')
+        prepare_url = f"http://127.0.0.1:{int(request.scope['server'][1])}/static/verification-ready.html"
+
     # 暂停该账号的自动 Token 刷新/滑块循环。自动滑块和人工验证共用
     # browser_limit 全局信号量（默认 3 槽位），自动滑块占满槽位后人工验证
     # 会在 launch_browser 里等 300 秒超时，前端弹窗就卡在白屏 loading。
@@ -9152,6 +9170,7 @@ async def start_manual_captcha(
             log_with_user('info', f"账号 {cookie_id} 已暂停自动验证，等待人工完成", current_user)
 
     async def finalize(result):
+        candidate_cookies = result['cookies_str']
         # 拿到 x5sec 后必须清掉 x5secdata 等挑战标记，否则闲鱼会认为验证仍未完成，
         # 继续返回 FAIL_SYS_USER_VALIDATE —— 表现为"滑块过了但账号还是用不了"
         from utils.xianyu_utils import drop_stale_captcha_challenge
@@ -9162,17 +9181,31 @@ async def start_manual_captcha(
 
         # A completed page is not proof that IM accepted the credential.
         # Verify once, then atomically save against the owner and original value.
-        from utils.platform_session import PlatformSession
+        from utils.platform_session import PlatformSession, RenewalResult
+        from utils.browser_im_verification import BrowserIMReceipt
         from utils.xianyu_utils import generate_device_id
         original = user_cookies[cookie_id]
         account = trans_cookies(original).get('unb')
         if not account or trans_cookies(result['cookies_str']).get('unb') != account:
             raise HTTPException(409, '验证账号不一致，原授权已保留')
         device_id = getattr(_instance, 'device_id', None) or generate_device_id(account)
-        async with PlatformSession(result['cookies_str'], device_id) as platform:
-            verified = await platform.verify_token()
-            if verified.status != 'success' or not verified.token or not platform.same_account():
-                raise HTTPException(409, '闲鱼仍未放行聊天认证，账号保持暂停，请稍后手动验证')
+        browser_receipt = result.get('browser_receipt')
+        if browser_receipt is not None:
+            if (not isinstance(browser_receipt, BrowserIMReceipt)
+                    or browser_receipt.account != account
+                    or browser_receipt.cookies != candidate_cookies
+                    or not browser_receipt.token or not browser_receipt.device_id):
+                raise HTTPException(409, '官网聊天认证结果不一致，原授权已保留')
+            # The official page already authenticated in this exact browser.
+            # A second raw HTTP request changes its environment and can challenge
+            # the account again. Reuse the observed token and matching device ID.
+            verified = RenewalResult('success', result['cookies_str'], browser_receipt.token)
+            device_id = browser_receipt.device_id
+        else:
+            async with PlatformSession(result['cookies_str'], device_id) as platform:
+                verified = await platform.verify_token()
+                if verified.status != 'success' or not verified.token or not platform.same_account():
+                    raise HTTPException(409, '闲鱼仍未放行聊天认证，账号保持暂停，请稍后手动验证')
         if trans_cookies(verified.cookies).get('unb') != account:
             raise HTTPException(409, '验证账号不一致，原授权已保留')
         if not db_manager.compare_and_update_cookie(
@@ -9190,6 +9223,7 @@ async def start_manual_captcha(
                     instance.cookies_str = result['cookies_str']
                     instance.cookies = trans_cookies(result['cookies_str'])
                     instance.current_token = verified.token
+                    instance.device_id = device_id
                     instance.last_token_refresh_time = time.time()
                     instance.last_cookie_refresh_time = instance.last_token_refresh_time
                     instance.needs_relogin = False
@@ -9213,7 +9247,7 @@ async def start_manual_captcha(
         async with asyncio.timeout(timeout + 90):
             result = await open_manual_session(
                 cookie_id, user_cookies[cookie_id], timeout=timeout,
-                headless=not native_verification_enabled(),
+                headless=not native, regular_profile=profile, prepare_url=prepare_url,
                 attempt_id=attempt_id, owner=current_user['user_id'], finalize=finalize,
             )
     finally:

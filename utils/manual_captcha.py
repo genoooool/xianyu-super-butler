@@ -173,6 +173,8 @@ async def open_manual_session(
     attempt_id: str = '',
     owner: int = 0,
     finalize: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    regular_profile: Optional[str] = None,
+    prepare_url: str = '',
 ) -> Dict[str, Any]:
     """打开一个人工验证会话，等待人在浏览器里完成滑块。
 
@@ -208,6 +210,7 @@ async def open_manual_session(
     browser = None
     context = None
     refresh_task = None
+    regular = None
     finalizing = False
     closing = False
     def browser_closed(*_):
@@ -215,6 +218,18 @@ async def open_manual_session(
             task.cancel()
 
     try:
+        if regular_profile:
+            from utils.regular_chrome_verification import RegularChromeSession
+            from utils.platform_session import parse_cookies
+            regular = RegularChromeSession(regular_profile, prepare_url)
+            logger.info(f'【{cookie_id}】使用常用 Chrome 的官网消息页认证')
+            receipt = await regular.wait(parse_cookies(cookies_str).get('unb'), timeout)
+            result.update(success=True, cookies_str=receipt.cookies, browser_receipt=receipt)
+            if finalize is not None:
+                finalizing = True
+                await finalize(result)
+            result['message'] = '官网聊天认证已通过并保存，本次标签页已关闭，账号正在恢复连接'
+            return result
         playwright = await async_playwright().start()
         browser = await browser_limit.launch_browser(
             playwright,
@@ -239,81 +254,87 @@ async def open_manual_session(
         if not headless:
             await page.bring_to_front()
 
-        # 惩罚页 URL 优先：只有导航到它才会弹出滑块。
-        # 原实现导航到闲鱼首页，首页没有滑块 → check_completion 立刻误判
-        # “已完成” → 浏览器秒关，用户连上控制页时会话已不存在。
-        #
-        # 先触发一次实时 Token 刷新拿最新 URL（账号正在风控才返回）；拿不到
-        # 再退回 DB 里最近一次惩罚 URL（可能已过期，等滑块时会发现）。
-        verification_url = await _fetch_live_verification_url(cookie_id, cookies_str)
-        if not verification_url:
-            verification_url = get_verification_url(cookie_id)
-        if not verification_url:
-            result["message"] = "未找到该账号的滑块惩罚 URL，无法开启人工验证"
-            logger.warning(f"【{cookie_id}】{result['message']}")
-            return result
+        if not headless:
+            from utils.browser_im_verification import wait_for_browser_im
+            from utils.platform_session import parse_cookies
+            logger.info(f"【{cookie_id}】打开官网消息页，等待同一浏览器完成聊天认证")
+            try:
+                receipt = await wait_for_browser_im(
+                    page, context, parse_cookies(cookies_str).get('unb'), timeout)
+            except TimeoutError:
+                result['message'] = '官网尚未完成聊天认证，原授权和等待状态已保留；请稍后手动重试'
+                return result
+            result['browser_receipt'] = receipt
+            new_cookies = receipt.cookies
+        else:
+            # 惩罚页 URL 优先：只有导航到它才会弹出滑块。
+            # 原实现导航到闲鱼首页，首页没有滑块 → check_completion 立刻误判
+            # “已完成” → 浏览器秒关，用户连上控制页时会话已不存在。
+            #
+            # 先触发一次实时 Token 刷新拿最新 URL（账号正在风控才返回）；拿不到
+            # 再退回 DB 里最近一次惩罚 URL（可能已过期，等滑块时会发现）。
+            verification_url = await _fetch_live_verification_url(cookie_id, cookies_str)
+            if not verification_url:
+                verification_url = get_verification_url(cookie_id)
+            if not verification_url:
+                result["message"] = "未找到该账号的滑块惩罚 URL，无法开启人工验证"
+                logger.warning(f"【{cookie_id}】{result['message']}")
+                return result
 
-        try:
-            await page.goto(verification_url, wait_until="domcontentloaded", timeout=60000)
-        except Exception as exc:
-            logger.warning(f"【{cookie_id}】导航惩罚页失败: {exc}")
-        # 给验证组件一点渲染时间，否则截图可能是空白
-        await asyncio.sleep(2)
+            try:
+                await page.goto(verification_url, wait_until="domcontentloaded", timeout=60000)
+            except Exception as exc:
+                logger.warning(f"【{cookie_id}】导航惩罚页失败: {exc}")
+            # 给验证组件一点渲染时间，否则截图可能是空白
+            await asyncio.sleep(2)
 
-        # 等滑块真正出现再建会话 —— 找不到滑块说明 x5secdata 已失效，
-        # 此时即使建了会话也拖不出结果，尽早告知用户更合适。
-        captcha_appeared = await _wait_for_captcha_present(page, timeout=CAPTCHA_PRESENT_TIMEOUT)
-        if not captcha_appeared:
-            result["message"] = (
-                "已导航到惩罚页但未检测到滑块（x5secdata 可能已过期），"
-                "本次验证未完成，原授权已保留，请稍后手动重试"
-            )
-            logger.warning(f"【{cookie_id}】{result['message']}")
-            return result
+            # 等滑块真正出现再建会话 —— 找不到滑块说明 x5secdata 已失效，
+            # 此时即使建了会话也拖不出结果，尽早告知用户更合适。
+            captcha_appeared = await _wait_for_captcha_present(page, timeout=CAPTCHA_PRESENT_TIMEOUT)
+            if not captcha_appeared:
+                result["message"] = (
+                    "已导航到惩罚页但未检测到滑块（x5secdata 可能已过期），"
+                    "本次验证未完成，原授权已保留，请稍后手动重试"
+                )
+                logger.warning(f"【{cookie_id}】{result['message']}")
+                return result
 
-        if headless:
             await captcha_controller.create_session(session_id, page)
             refresh_task = asyncio.create_task(
                 captcha_controller.auto_refresh_screenshot(session_id, interval=1.0)
             )
-        else:
-            # Native input goes directly to the page, with no screenshots or
-            # forwarded mouse events competing with the user's drag.
-            captcha_controller.active_sessions[session_id] = {
-                'page': page, 'completed': False, 'native': True,
-            }
 
-        logger.warning(
-            f"【{cookie_id}】已开启人工验证会话，请在 {timeout} 秒内于"
-            f"{'工作台画面' if headless else '专用官网窗口'}完成人工验证"
-        )
+            logger.warning(
+                f"【{cookie_id}】已开启人工验证会话，请在 {timeout} 秒内于"
+                f"{'工作台画面' if headless else '专用官网窗口'}完成人工验证"
+            )
 
-        # 关键：会话期间浏览器必须保持存活，等用户拖完才返回。
-        # 原实现在这里死等 timeout，且 check_completion 在无滑块时误判完成
-        # 直接秒关 —— 改为“滑块出现后，持续等待它消失（完成）或超时”。
-        deadline = time.monotonic() + timeout
-        completed = False
-        while time.monotonic() < deadline:
-            await asyncio.sleep(2)
-            if page.is_closed() or not browser.is_connected():
-                result['message'] = '验证窗口已关闭，原授权和等待状态已保留'
+            # 关键：会话期间浏览器必须保持存活，等用户拖完才返回。
+            # 原实现在这里死等 timeout，且 check_completion 在无滑块时误判完成
+            # 直接秒关 —— 改为“滑块出现后，持续等待它消失（完成）或超时”。
+            deadline = time.monotonic() + timeout
+            completed = False
+            while time.monotonic() < deadline:
+                await asyncio.sleep(2)
+                if page.is_closed() or not browser.is_connected():
+                    result['message'] = '验证窗口已关闭，原授权和等待状态已保留'
+                    return result
+                try:
+                    if await captcha_controller.check_completion(session_id):
+                        completed = True
+                        break
+                except Exception as exc:
+                    logger.debug(f"【{cookie_id}】检查验证完成状态失败: {exc}")
+
+            if not completed:
+                result["message"] = f"人工验证超时（{timeout} 秒内未完成）"
+                logger.warning(f"【{cookie_id}】{result['message']}")
                 return result
-            try:
-                if await captcha_controller.check_completion(session_id):
-                    completed = True
-                    break
-            except Exception as exc:
-                logger.debug(f"【{cookie_id}】检查验证完成状态失败: {exc}")
 
-        if not completed:
-            result["message"] = f"人工验证超时（{timeout} 秒内未完成）"
-            logger.warning(f"【{cookie_id}】{result['message']}")
-            return result
-
-        new_cookies = _from_playwright_cookies(await context.cookies())
-        if not new_cookies:
-            result["message"] = "验证已完成但未取到 Cookie"
-            return result
+            new_cookies = _from_playwright_cookies(await context.cookies())
+            if not new_cookies:
+                result["message"] = "验证已完成但未取到 Cookie"
+                return result
 
         result["success"] = True
         result["cookies_str"] = new_cookies
@@ -331,11 +352,17 @@ async def open_manual_session(
     except Exception as exc:
         if finalizing:
             raise
-        result["message"] = f"人工验证页面未能完成（{type(exc).__name__}），原授权已保留"
+        result["message"] = (str(exc) if regular is not None and isinstance(exc, (RuntimeError, TimeoutError))
+                             else f"人工验证页面未能完成（{type(exc).__name__}），原授权已保留")
         logger.error(f"【{cookie_id}】{result['message']}")
         return result
     finally:
         closing = True
+        if regular is not None:
+            try:
+                await regular.close()
+            except Exception:
+                result['message'] += '；本次 Chrome 标签页未能自动关闭，请手动关闭该标签'
         if refresh_task and not refresh_task.done():
             refresh_task.cancel()
             await asyncio.gather(refresh_task, return_exceptions=True)

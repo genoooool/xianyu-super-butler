@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from utils import manual_captcha as manual
 from utils.captcha_remote_control import captcha_controller
+from utils.browser_im_verification import BrowserIMReceipt
 
 
 class NativeManualCaptchaTests(unittest.IsolatedAsyncioTestCase):
@@ -27,6 +28,11 @@ class NativeManualCaptchaTests(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(return_value=self.browser)))
         self.fetch = self.stack.enter_context(patch.object(manual, '_fetch_live_verification_url',
             new=AsyncMock(return_value='https://example.invalid/punish')))
+        async def website(page, context, account, timeout):
+            await page.goto('https://www.goofish.com/im')
+            await self.real_sleep(0)
+            return BrowserIMReceipt('123', 'site-device', 'unb=123', 'site-token')
+        self.stack.enter_context(patch('utils.browser_im_verification.wait_for_browser_im', side_effect=website))
         self.stack.enter_context(patch.object(manual, '_wait_for_captcha_present', new=AsyncMock(return_value=True)))
         self.stack.enter_context(patch.object(captcha_controller, 'check_completion', new=AsyncMock(return_value=True)))
         self.create = self.stack.enter_context(patch.object(captcha_controller, 'create_session', new=AsyncMock()))
@@ -59,7 +65,7 @@ class NativeManualCaptchaTests(unittest.IsolatedAsyncioTestCase):
         self.page.bring_to_front.assert_awaited_once()
         self.create.assert_not_awaited()
         self.refresh.assert_not_awaited()
-        self.fetch.assert_awaited_once()
+        self.fetch.assert_not_awaited()
         self.assert_clean()
 
     async def test_save_failure_closes_owned_browser_without_claiming_success(self):
