@@ -9085,10 +9085,9 @@ def use_quick_phrase(
 @app.get('/api/captcha/manual-mode')
 async def get_manual_captcha_mode(current_user: Dict[str, Any] = Depends(get_current_user)):
     from utils.manual_captcha import native_verification_enabled
-    from utils.regular_chrome_verification import regular_chrome_profile
-    native = native_verification_enabled()
-    profile = await regular_chrome_profile() if native else None
-    return {'native': native, 'browser': 'chrome' if profile else 'builtin'}
+    # The normal account action must use that account's stored credentials.
+    # A connected personal Chrome profile may belong to a different account.
+    return {'native': native_verification_enabled(), 'browser': 'builtin'}
 
 
 @app.post('/api/captcha/manual-session/cancel')
@@ -9150,7 +9149,8 @@ async def start_manual_captcha(
     if browser_mode not in ('', 'chrome', 'builtin'):
         raise HTTPException(400, '无效的验证方式')
     native = native_verification_enabled()
-    profile = await regular_chrome_profile() if native and browser_mode != 'builtin' else None
+    # Keep the legacy explicit Chrome API opt-in, but never auto-select it.
+    profile = await regular_chrome_profile() if native and browser_mode == 'chrome' else None
     if browser_mode == 'chrome' and not profile:
         raise HTTPException(409, '常用 Chrome 的连接不可用，请保持 Chrome 与浏览器连接工具开启')
     prepare_url = ''

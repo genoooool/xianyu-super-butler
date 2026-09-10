@@ -4,6 +4,7 @@ import asyncio
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
+import re
 from pathlib import Path
 import threading
 from urllib.parse import urlsplit
@@ -31,7 +32,7 @@ async def run(args):
             'verification_message': '闲鱼要求安全验证'}]},
         '/desktop/notifications/status': {'available': False, 'active': False},
         '/desktop/credentials': {'available': False}, '/system-settings/public': {},
-        '/api/captcha/manual-mode': {'native': True, 'browser': 'chrome'},
+        '/api/captcha/manual-mode': {'native': True, 'browser': 'builtin'},
     }
     calls, errors = [], []
     manual_started, manual_done = asyncio.Event(), asyncio.Event()
@@ -46,6 +47,8 @@ async def run(args):
             await request.continue_()
         elif path == '/api/captcha/manual-session':
             assert 'attempt_id' in request.request.post_data
+            assert re.search(r'name="browser_mode"\r\n\r\nbuiltin\r\n', request.request.post_data)
+            assert re.search(r'name="cookie_id"\r\n\r\nfixture-a\r\n', request.request.post_data)
             manual_started.set()
             await manual_done.wait()
             await request.fulfill(json=manual_result)
@@ -80,7 +83,8 @@ async def run(args):
                 await action.click()
                 await asyncio.wait_for(manual_started.wait(), 5)
                 await expect(page.get_by_text('在官网窗口直接操作', exact=True)).to_be_visible()
-                await expect(page.get_by_text('使用常用 Chrome 中的闲鱼登录状态。', exact=False)).to_be_visible()
+                await expect(page.get_by_text('使用常用 Chrome 中的闲鱼登录状态。', exact=False)).to_have_count(0)
+                await expect(page.get_by_text('请在专用浏览器中按官网提示操作。', exact=False)).to_be_visible()
                 await expect(page.get_by_alt_text('服务器端验证页面')).to_have_count(0)
                 await page.screenshot(path=str(args.output_dir / 'native-verification.png'), animations='disabled')
                 await page.get_by_role('button', name='关闭', exact=True).last.click()
@@ -98,6 +102,7 @@ async def run(args):
                 assert not websockets, websockets
                 assert not errors, errors
                 result = {'status': 'passed', 'no_automatic_login_or_verification': True,
+                          'selected_account_uses_builtin_browser': True,
                           'native_manual_no_screenshot_or_websocket': True,
                           'cancel_linked_and_success_closes_modal': True,
                           'distinct_expiry_and_challenge': True, 'javascript_errors': errors}

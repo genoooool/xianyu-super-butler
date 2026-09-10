@@ -2,6 +2,7 @@
 import asyncio
 import unittest
 from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from utils import manual_captcha as manual
@@ -156,3 +157,44 @@ class ManualCancelOwnerTests(unittest.IsolatedAsyncioTestCase):
                 await reply_server.cancel_manual_captcha('a', 'e3e3bfa9-f320-4ef9-a58b-1f6474f10822', {'user_id': 8})
             self.assertEqual(raised.exception.status_code, 404)
             cancel.assert_not_called()
+
+
+class ManualBrowserRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_connected_personal_chrome_does_not_change_default_mode(self):
+        from app import reply_server
+        with patch.object(manual, 'native_verification_enabled', return_value=True), \
+             patch('utils.regular_chrome_verification.regular_chrome_profile',
+                   new=AsyncMock(return_value='personal-profile')) as profile:
+            mode = await reply_server.get_manual_captcha_mode({'user_id': 7})
+        self.assertEqual(mode, {'native': True, 'browser': 'builtin'})
+        profile.assert_not_awaited()
+
+    async def test_default_and_builtin_sessions_use_each_selected_accounts_cookies(self):
+        from app import reply_server
+        db = Mock()
+        db.get_all_cookies.return_value = {
+            'account-a': 'unb=111; cookie2=first',
+            'account-b': 'unb=222; cookie2=second',
+        }
+        registry = Mock(get=Mock(return_value=SimpleNamespace(is_blocked=True)))
+        with patch('app.db_manager.db_manager', db), \
+             patch.object(reply_server.cookie_manager, 'manager', None), \
+             patch('utils.risk_control.registry', registry), \
+             patch.object(manual, 'native_verification_enabled', return_value=True), \
+             patch('utils.regular_chrome_verification.regular_chrome_profile',
+                   new=AsyncMock(return_value='personal-profile')) as profile, \
+             patch.object(manual, 'open_manual_session', new=AsyncMock(return_value={
+                 'success': False, 'message': 'offline stop', 'session_id': 'fixture',
+             })) as start:
+            for mode in ('', 'builtin'):
+                for account, cookies in db.get_all_cookies.return_value.items():
+                    with self.subTest(mode=mode, account=account):
+                        await reply_server.start_manual_captcha(
+                            account, 60, {'user_id': 7},
+                            'e3e3bfa9-f320-4ef9-a58b-1f6474f10822', mode, None)
+                        self.assertEqual(start.call_args.args, (account, cookies))
+                        self.assertIsNone(start.call_args.kwargs['regular_profile'])
+                        self.assertFalse(start.call_args.kwargs['headless'])
+                        self.assertEqual(start.call_args.kwargs['owner'], 7)
+            profile.assert_not_awaited()
+            db.compare_and_update_cookie.assert_not_called()
