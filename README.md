@@ -5,7 +5,7 @@
 Xianyu Workbench is an open-source desktop workspace for Xianyu sellers, with multi-account messaging, AI-assisted customer service, human handoff and digital-code delivery. Community maintained; not affiliated with Xianyu.
 
 [![GitHub Stars](https://img.shields.io/github/stars/genoooool/xianyu-super-butler?style=flat&logo=github&color=f5b301)](https://github.com/genoooool/xianyu-super-butler/stargazers)
-[![Desktop Version](https://img.shields.io/badge/Desktop-1.0.4-52c41a)](https://github.com/genoooool/xianyu-super-butler/releases/latest)
+[![Desktop Version](https://img.shields.io/badge/Desktop-1.0.5-52c41a)](https://github.com/genoooool/xianyu-super-butler/releases/latest)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)](https://react.dev/)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-222222)](LICENSE)
@@ -22,7 +22,7 @@ Xianyu Workbench is an open-source desktop workspace for Xianyu sellers, with mu
 | 给数字商品发卡密或文本资料 | 先配置库存与发货规则；发送和确认发货分别检查平台回执，未知结果需要人工核对 |
 | 在服务器或 NAS 上自行部署 | 使用本仓库源码构建；下文上游预构建 Docker 镜像不能等同于本分支版本 |
 
-**1.0.4 更新：** 快捷短语支持编辑、分组、拖动排序和图片预览；聊天面板限高滚动，修复输入框外框和面板收起交互。沿用 1.0.3 的桌面登录与闲鱼续期修复；平台要求手机验证，或旧授权失效且没有长期凭证时，仍需重新扫码。详见[版本记录](CHANGELOG.md)与[授权说明](docs/desktop-login.md)。
+**1.0.5 更新：** 修复多账号人工验证误用常用 Chrome 登录状态的问题，按所选账号打开专用官网窗口；补齐扫码“保持登录”、验证等待和窗口关闭联动，并支持 Windows 消息提示音。平台要求刷脸或滑块时仍需本人完成，旧授权过期且无法续期时仍需重新扫码。详见[版本记录](CHANGELOG.md)与[授权说明](docs/desktop-login.md)。
 
 > [!IMPORTANT]
 > **桌面安装只是入口，核心改动是让多店客服、AI 回复和自动发货真正可控。**

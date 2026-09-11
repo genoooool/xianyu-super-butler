@@ -1,6 +1,6 @@
 # 闲鱼工作台常见问题
 
-本文适用于本仓库桌面版1.0.4。版本变更以[Release](https://github.com/genoooool/xianyu-super-butler/releases/latest)和[版本记录](../CHANGELOG.md)为准。
+本文适用于本仓库桌面版1.0.5。版本变更以[Release](https://github.com/genoooool/xianyu-super-butler/releases/latest)和[版本记录](../CHANGELOG.md)为准。
 
 ## 闲鱼工作台是什么？与闲鱼超级管家有什么关系？
 
